@@ -12,6 +12,7 @@
 #include "pages/AudioTestPage.h"
 #include "pages/WifiTestPage.h"
 #include "pages/TimeTestPage.h"
+#include "services/OfficialCompatServer.h"
 #include "ble/bluetooth_service.h"
 #include "net/NetManager.h"
 #include <thread>
@@ -88,6 +89,7 @@ static void onUI_init(){
 
 	KeyManager::getInstance().start();
     loadConfigAndStart();
+    OfficialCompatServer::getInstance().start();
     EASYUICONTEXT->openActivity("btnTestActivity", nullptr);
 }
 
