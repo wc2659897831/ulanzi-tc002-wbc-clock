@@ -30,6 +30,8 @@ extern "C" {
 #include <zlib.h>
 
 #include "managers/AudioManager.h"
+#include "managers/MenuIndicator.h"
+#include "managers/StreamNoticeIndicator.h"
 #include "pages/PageBase.h"
 
 #define WIFIMANAGER NETMANAGER->getWifiManager()
@@ -321,6 +323,10 @@ void OfficialCompatServer::stop() {
     stopAnimation();
 }
 
+void OfficialCompatServer::stopDisplay() {
+    stopAnimation();
+}
+
 void OfficialCompatServer::serverLoop() {
     mListenFd = socket(AF_INET, SOCK_STREAM, 0);
     if (mListenFd < 0) {
@@ -500,8 +506,15 @@ void OfficialCompatServer::handleCustom(int clientFd,
         const std::string appName = extractQueryValue(target, "name");
         LOGI_TRACE("OfficialCompatServer: custom app=%s", appName.c_str());
 
+        const bool canDisplay =
+                StreamNoticeIndicator::getInstance().isStreamDisplayEnabled();
+
         if (request.empty()) {
-            clearDisplay();
+            if (canDisplay) {
+                clearDisplay();
+            } else {
+                StreamNoticeIndicator::getInstance().notifyStreamData();
+            }
             sendResponse(clientFd, 200, "application/json",
                     "{\"code\":200,\"message\":\"success\"}");
             return;
@@ -509,6 +522,9 @@ void OfficialCompatServer::handleCustom(int clientFd,
 
         const base::JSONArray images = request.getArray("image");
         if (images.size() <= 0) {
+            if (!canDisplay) {
+                StreamNoticeIndicator::getInstance().notifyStreamData();
+            }
             sendResponse(clientFd, 200, "application/json",
                     "{\"code\":200,\"message\":\"success\"}");
             return;
@@ -519,6 +535,13 @@ void OfficialCompatServer::handleCustom(int clientFd,
         if (dataUri.empty()) {
             sendResponse(clientFd, 400, "application/json",
                     "{\"code\":400,\"message\":\"missing image data\"}");
+            return;
+        }
+
+        if (!canDisplay) {
+            StreamNoticeIndicator::getInstance().notifyStreamData();
+            sendResponse(clientFd, 200, "application/json",
+                    "{\"code\":200,\"message\":\"success\"}");
             return;
         }
 
@@ -1412,6 +1435,7 @@ void OfficialCompatServer::clearDisplay() {
     stopAnimation();
     std::vector<unsigned char> framebuffer(kDisplayWidth *
             kDisplayHeight * 3, 0);
+    MenuIndicator::getInstance().apply(framebuffer);
     PageBase::sendRawLedData(framebuffer);
 }
 
@@ -1431,6 +1455,7 @@ void OfficialCompatServer::showDecodeError() {
             }
         }
     }
+    MenuIndicator::getInstance().apply(framebuffer);
     PageBase::sendRawLedData(framebuffer);
 }
 
@@ -1459,6 +1484,7 @@ void OfficialCompatServer::displayFrames(
                 OfficialCompatServer::kDisplayHeight * 3, 0);
         if (OfficialCompatServer::pasteFrame(frame, positionX, positionY,
                 framebuffer)) {
+            MenuIndicator::getInstance().apply(framebuffer);
             PageBase::sendRawLedData(framebuffer);
         }
     };
@@ -1488,6 +1514,7 @@ void OfficialCompatServer::displayFrames(
                 std::vector<unsigned char> framebuffer(kDisplayWidth *
                         kDisplayHeight * 3, 0);
                 if (pasteFrame(frame, positionX, positionY, framebuffer)) {
+                    MenuIndicator::getInstance().apply(framebuffer);
                     PageBase::sendRawLedData(framebuffer);
                 }
                 std::unique_lock<std::mutex> lock(mAnimationMutex);

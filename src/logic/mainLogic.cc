@@ -5,11 +5,16 @@
 #include "utils/SpiHelper.h"
 #include "utils/GpioHelper.h"
 #include "managers/KeyManager.h"
+#include "managers/MenuIndicator.h"
 #include "managers/PageManager.h"
 #include "managers/McuManager.h"
+#include "managers/StreamNoticeIndicator.h"
+#include "pages/MenuPage.h"
 #include "pages/RgbTestPage.h"
 #include "pages/BtnTestPage.h"
 #include "pages/AudioTestPage.h"
+#include "pages/FunctionsPage.h"
+#include "pages/SettingsPage.h"
 #include "pages/WifiTestPage.h"
 #include "pages/TimeTestPage.h"
 #include "services/OfficialCompatServer.h"
@@ -20,6 +25,177 @@
 #define WIFIMANAGER NETMANAGER->getWifiManager()
 #define CONFIG_PATH "/mnt/usb1/test.cfg"
 namespace {
+
+#define TIMER_MENU_CLOCK_REFRESH 1
+#define TIMER_MENU_CLOCK_REFRESH_TIME 500
+
+enum MenuDepth {
+	MENU_DEPTH_TOP = 0,
+	MENU_DEPTH_CHILD
+};
+
+static int gTopPageIndex = MenuPage::TOP_CLOCK;
+static int gTestPageIndex = 0;
+static MenuDepth gMenuDepth = MENU_DEPTH_TOP;
+static int gClockCountdownMs = 3000;
+static int gLastClockCountdownValue = -1;
+
+static const char* TEST_PAGE_NAMES[] = {
+	"BtnTestPage",
+	"RgbTestPage",
+	"AudioTestPage",
+	"WifiTestPage"
+};
+static const int TEST_PAGE_COUNT =
+	sizeof(TEST_PAGE_NAMES) / sizeof(TEST_PAGE_NAMES[0]);
+
+static int wrapIndex(int value, int count) {
+	if (count <= 0) {
+		return 0;
+	}
+	while (value < 0) {
+		value += count;
+	}
+	while (value >= count) {
+		value -= count;
+	}
+	return value;
+}
+
+static void drawTopMenu() {
+	MenuIndicator::getInstance().show(MenuPage::TOP_COUNT, gTopPageIndex);
+	StreamNoticeIndicator::getInstance().setTopMenuVisible(true);
+	StreamNoticeIndicator::getInstance().setStreamDisplayEnabled(false);
+	MenuPage* menuPage = static_cast<MenuPage*>(
+		PageManager::getInstance().getPage("MenuPage"));
+	if (menuPage) {
+		menuPage->setTopPage(gTopPageIndex);
+		menuPage->setClockCountdown(
+			gTopPageIndex == MenuPage::TOP_CLOCK ?
+			((gClockCountdownMs + 999) / 1000) : 0);
+	}
+	PageManager::getInstance().navigateTo("MenuPage");
+}
+
+static void showChildIndicator() {
+	if (gTopPageIndex == MenuPage::TOP_TEST) {
+		MenuIndicator::getInstance().show(TEST_PAGE_COUNT, gTestPageIndex);
+	} else if (gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
+		MenuIndicator::getInstance().show(2, 0);
+	} else {
+		MenuIndicator::getInstance().hide();
+	}
+}
+
+static void enterChildPage() {
+	gMenuDepth = MENU_DEPTH_CHILD;
+	StreamNoticeIndicator::getInstance().setTopMenuVisible(false);
+	StreamNoticeIndicator::getInstance().setStreamDisplayEnabled(
+		gTopPageIndex == MenuPage::TOP_STREAM);
+	showChildIndicator();
+	if (gTopPageIndex == MenuPage::TOP_TEST) {
+		PageManager::getInstance().navigateTo(TEST_PAGE_NAMES[gTestPageIndex]);
+	} else if (gTopPageIndex == MenuPage::TOP_CLOCK) {
+		PageManager::getInstance().navigateTo("TimeTestPage");
+	} else if (gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
+		PageManager::getInstance().navigateTo("FunctionsPage");
+	} else if (gTopPageIndex == MenuPage::TOP_SETTINGS) {
+		PageManager::getInstance().navigateTo("SettingsPage");
+	} else {
+		PageManager::getInstance().drawCurrentPage();
+	}
+}
+
+static void exitChildPage() {
+	if (gTopPageIndex == MenuPage::TOP_STREAM) {
+		OfficialCompatServer::getInstance().stopDisplay();
+	}
+	StreamNoticeIndicator::getInstance().setStreamDisplayEnabled(false);
+	gClockCountdownMs = 3000;
+	gLastClockCountdownValue = -1;
+	gMenuDepth = MENU_DEPTH_TOP;
+	drawTopMenu();
+}
+
+static void streamNoticeCb() {
+	if (gMenuDepth == MENU_DEPTH_TOP) {
+		PageManager::getInstance().drawCurrentPage();
+	}
+}
+
+static void handleTopScroll(int delta) {
+	gTopPageIndex = wrapIndex(gTopPageIndex + delta, MenuPage::TOP_COUNT);
+	gClockCountdownMs = 3000;
+	gLastClockCountdownValue = -1;
+	drawTopMenu();
+}
+
+static void updateClockTopCountdown() {
+	if (gMenuDepth != MENU_DEPTH_TOP || gTopPageIndex != MenuPage::TOP_CLOCK) {
+		return;
+	}
+
+	gClockCountdownMs -= TIMER_MENU_CLOCK_REFRESH_TIME;
+	if (gClockCountdownMs <= 0) {
+		enterChildPage();
+		return;
+	}
+
+	const int countdown = (gClockCountdownMs + 999) / 1000;
+	if (countdown != gLastClockCountdownValue) {
+		gLastClockCountdownValue = countdown;
+		drawTopMenu();
+	}
+}
+
+static void handleChildScroll(int delta) {
+	if (gTopPageIndex == MenuPage::TOP_SETTINGS ||
+			gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
+		PageManager::getInstance().onKeyEvent(
+			delta > 0 ? E_KEYCODE_CLOCKWISE : E_KEYCODE_ANTI_CLOCKWISE, 0);
+		return;
+	}
+
+	if (gTopPageIndex != MenuPage::TOP_TEST) {
+		return;
+	}
+	gTestPageIndex = wrapIndex(gTestPageIndex + delta, TEST_PAGE_COUNT);
+	showChildIndicator();
+	PageManager::getInstance().navigateTo(TEST_PAGE_NAMES[gTestPageIndex]);
+}
+
+void keyEventCb(int keyCode, int keyStatus) {
+	if (keyCode == E_KEYCODE_CLOCKWISE && keyStatus == 0) {
+		if (gMenuDepth == MENU_DEPTH_TOP) {
+			handleTopScroll(1);
+		} else {
+			handleChildScroll(1);
+		}
+		return;
+	}
+
+	if (keyCode == E_KEYCODE_ANTI_CLOCKWISE && keyStatus == 0) {
+		if (gMenuDepth == MENU_DEPTH_TOP) {
+			handleTopScroll(-1);
+		} else {
+			handleChildScroll(-1);
+		}
+		return;
+	}
+
+	if (keyCode == E_KEYCODE_KNOB_BUTTON && keyStatus == 1) {
+		if (gMenuDepth == MENU_DEPTH_TOP) {
+			enterChildPage();
+		} else {
+			exitChildPage();
+		}
+		return;
+	}
+
+	if (gMenuDepth == MENU_DEPTH_CHILD) {
+		PageManager::getInstance().onKeyEvent(keyCode, keyStatus);
+	}
+}
 
 void loadConfigAndStart() {
 	if (!base::wifiOnAndWait(10)) {
@@ -64,7 +240,7 @@ void loadConfigAndStart() {
 }
 
 static S_ACTIVITY_TIMEER REGISTER_ACTIVITY_TIMER_TAB[] = {
-
+	{TIMER_MENU_CLOCK_REFRESH, TIMER_MENU_CLOCK_REFRESH_TIME}
 };
 
 /**
@@ -86,11 +262,16 @@ static void onUI_init(){
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new AudioTestPage()));
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new WifiTestPage()));
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new TimeTestPage()));
+	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new FunctionsPage()));
+	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new SettingsPage()));
+	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new MenuPage()));
 
 	KeyManager::getInstance().start();
+	KeyManager::getInstance().addKeyEventCallback(keyEventCb);
+	StreamNoticeIndicator::getInstance().setNoticeCallback(streamNoticeCb);
     loadConfigAndStart();
     OfficialCompatServer::getInstance().start();
-    EASYUICONTEXT->openActivity("btnTestActivity", nullptr);
+    drawTopMenu();
 }
 
 /**
@@ -119,7 +300,8 @@ static void onUI_hide() {
  * 当界面完全退出时触发
  */
 static void onUI_quit() {
-
+	KeyManager::getInstance().removeKeyEventCallback(keyEventCb);
+	OfficialCompatServer::getInstance().stop();
 }
 
 /**
@@ -141,7 +323,14 @@ static void onProtocolDataUpdate(const SProtocolData &data) {
  */
 static bool onUI_Timer(int id){
 	switch (id) {
-
+		case TIMER_MENU_CLOCK_REFRESH:
+			if (gMenuDepth == MENU_DEPTH_CHILD &&
+					(gTopPageIndex == MenuPage::TOP_CLOCK ||
+					 gTopPageIndex == MenuPage::TOP_FUNCTIONS)) {
+				PageManager::getInstance().drawCurrentPage();
+			}
+			updateClockTopCountdown();
+			break;
 		default:
 			break;
 	}

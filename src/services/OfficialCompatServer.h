@@ -17,6 +17,7 @@ public:
 
     void start();
     void stop();
+    void stopDisplay();
 
 private:
     struct DecodedFrame {
