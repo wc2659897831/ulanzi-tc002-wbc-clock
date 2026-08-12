@@ -1,8 +1,8 @@
 #include "pages/BtnTestPage.h"
 #include "base/base.h"
 
-static const Color COLOR_WHITE(255, 255, 255);
-static const Color COLOR_GREEN(0, 255, 0);
+static const Color COLOR_WHITE(235, 238, 245);
+static const Color COLOR_GREEN(20, 55, 48);
 static const Color COLOR_BLACK(0, 0, 0);
 
 #define DISPLAY_WIDTH  52
@@ -12,7 +12,7 @@ static const Color COLOR_BLACK(0, 0, 0);
 #define BTN_GAP      1
 #define BTN_HEIGHT   16
 
-BtnTestPage::BtnTestPage() 
+BtnTestPage::BtnTestPage()
 	: PageBase("BtnTestPage") {
     memset(mBtnStates, 0, sizeof(mBtnStates));
 }
@@ -31,7 +31,7 @@ void BtnTestPage::onExit() {
 
 bool BtnTestPage::onKeyEvent(int keyCode, int keyStatus) {
 	int index = getKeyIndex(keyCode);
-	if (index >= 0 && index < 4) {
+	if (index >= 0 && index < BTN_COUNT) {
 		mBtnStates[index] = (keyStatus == 1);
 		LOGD_TRACE("BtnTestPage: Button %d state changed to %s", 
 				   index, mBtnStates[index] ? "PRESSED" : "RELEASED");
@@ -58,9 +58,9 @@ int BtnTestPage::getKeyIndex(int keyCode) {
 }
 
 void BtnTestPage::draw() {
-	Surface surface(52, 16, COLOR_BLACK);
+	Surface surface(DISPLAY_WIDTH, DISPLAY_HEIGHT, COLOR_BLACK);
 	
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < BTN_COUNT; i++) {
 		drawButtonRegion(surface, i, mBtnStates[i]);
 	}
 	std::vector<uint8_t> data;
@@ -70,9 +70,9 @@ void BtnTestPage::draw() {
 
 void BtnTestPage::drawButtonRegion(Surface& surface, int index, bool isPressed) {
 	int x = index * (BTN_WIDTH + BTN_GAP);
-	int y = 0;
+	int y = DISPLAY_HEIGHT - 2;
 	
 	Color color = isPressed ? COLOR_GREEN : COLOR_WHITE;
 	
-	Painter::getInstance().drawRect(surface, x, y, BTN_WIDTH, BTN_HEIGHT, color, true);
+	Painter::getInstance().drawRect(surface, x, y, BTN_WIDTH, 2, color, true);
 }

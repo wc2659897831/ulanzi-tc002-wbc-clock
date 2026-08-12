@@ -16,6 +16,7 @@ public:
 	virtual void onExit() = 0;
 	virtual bool onKeyEvent(int keyCode, int keyStatus) { return true; };
 	virtual const std::string& getName() const { return mName; }
+	static void sendRawLedData(const std::vector<uint8_t> &rgbData);
 protected:
     static Mutex mSpiMutex;
     void sendLedData(const std::vector<uint8_t> &rgbData);

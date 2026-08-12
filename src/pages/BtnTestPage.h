@@ -16,6 +16,8 @@ public:
 	virtual bool onKeyEvent(int keyCode, int keyStatus) override;
 	
 private:
+	static const int BTN_COUNT = 4;
+
 	bool mBtnStates[4];
 
 	void drawButtonRegion(Surface& surface, int index, bool isPressed);

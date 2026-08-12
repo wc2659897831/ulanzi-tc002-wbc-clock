@@ -58,7 +58,6 @@ static void onProtocolDataUpdate(const SProtocolData &data) {
 
 static bool onUI_Timer(int id){
 	switch (id) {
-
 		default:
 			break;
 	}

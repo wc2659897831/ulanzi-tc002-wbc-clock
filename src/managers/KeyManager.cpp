@@ -21,6 +21,7 @@
 #include "system/Thread.h"
 #include "base/log.h"
 #include "base/base.h"
+#include "managers/LightWaveOverlay.h"
 
 namespace {
 
@@ -248,6 +249,39 @@ bool KeyManager::eventThreadLoop() {
 }
 
 void KeyManager::notifyKeyEvent(int keyCode, int keyStatus) {
+	if (keyStatus == 0) {
+		if (keyCode == E_KEYCODE_CLOCKWISE) {
+			LightWaveOverlay::getInstance().triggerDiagonal(
+				LightWaveOverlay::DIAGONAL_LEFT_TOP_TO_RIGHT_BOTTOM);
+		} else if (keyCode == E_KEYCODE_ANTI_CLOCKWISE) {
+			LightWaveOverlay::getInstance().triggerDiagonal(
+				LightWaveOverlay::DIAGONAL_RIGHT_TOP_TO_LEFT_BOTTOM);
+		}
+	}
+
+	if (keyStatus == 1) {
+		switch (keyCode) {
+		case E_KEYCODE_KNOB_BUTTON:
+			LightWaveOverlay::getInstance().trigger(
+				LightWaveOverlay::DIRECTION_FROM_BOTTOM);
+			break;
+		case E_KEYCODE_LEFT_BUTTON:
+			LightWaveOverlay::getInstance().trigger(
+				LightWaveOverlay::DIRECTION_FROM_LEFT);
+			break;
+		case E_KEYCODE_MIDDLE_BUTTON:
+			LightWaveOverlay::getInstance().trigger(
+				LightWaveOverlay::DIRECTION_FROM_TOP);
+			break;
+		case E_KEYCODE_RIGHT_BUTTON:
+			LightWaveOverlay::getInstance().trigger(
+				LightWaveOverlay::DIRECTION_FROM_RIGHT);
+			break;
+		default:
+			break;
+		}
+	}
+
 	Mutex::Autolock _l(m_impl->m_mutex);
 	for (std::unordered_set<on_key_event_cb>::iterator it = m_impl->m_callbackSet.begin();
 			it != m_impl->m_callbackSet.end(); ++it) {
@@ -256,4 +290,3 @@ void KeyManager::notifyKeyEvent(int keyCode, int keyStatus) {
 		}
 	}
 }
-
