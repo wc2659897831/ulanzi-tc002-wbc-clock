@@ -40,6 +40,8 @@ private:
 	int mMicFrame;
 	int mMicPaletteIndex;
 	int mMicColumnLevels[52];
+	int mMicPeakLevels[52];
+	int mMicBandLevels[5];
 	bool mMicHasTriggered;
 	bool mMicAutoReportEnabled;
 	uint64_t mIpScrollStartMs;

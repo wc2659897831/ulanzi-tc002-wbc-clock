@@ -38,8 +38,10 @@ static const Color COLOR_MAGENTA(255, 80, 210);
 #define LARGE_CHAR_GAP 2
 #define DOT_WIDTH 1
 #define MIC_BAR_COUNT DISPLAY_WIDTH
-#define MIC_IDLE_PERCENT 3
+#define MIC_RAW_NOISE_GATE_PERCENT 4
+#define MIC_IDLE_PERCENT 0
 #define MIC_PALETTE_COUNT 5
+#define MIC_BAND_COUNT 5
 
 static const char* DIGITS[] = {
 	"111"
@@ -154,17 +156,75 @@ static Color micGradientColor(int rowFromBottom, int paletteIndex) {
 	return blendColor(palette.upper, palette.top, pos - 72, 28);
 }
 
-static int micColumnTarget(int column, int frame, int activeRows) {
-	if (activeRows <= 0) {
+static int percentToRows(int percent) {
+	if (percent <= 0) {
+		return 1;
+	}
+	return clampInt(1 + percent * (DISPLAY_HEIGHT - 1) / 100, 1, DISPLAY_HEIGHT);
+}
+
+static int micBandForColumn(int column) {
+	if (column < 8) {
+		return 0;
+	}
+	if (column < 20) {
+		return 1;
+	}
+	if (column < 33) {
+		return 2;
+	}
+	if (column < 44) {
+		return 3;
+	}
+	return 4;
+}
+
+static int micBandTargetPercent(int band, int percent, int punch, int frame) {
+	static const int baseGain[MIC_BAND_COUNT] = { 116, 96, 84, 68, 58 };
+	static const int punchGain[MIC_BAND_COUNT] = { 30, 52, 74, 100, 118 };
+	static const int pulseSpeed[MIC_BAND_COUNT] = { 2, 4, 6, 9, 12 };
+	static const int pulseDepth[MIC_BAND_COUNT] = { 8, 13, 18, 25, 32 };
+
+	const int pulse = ((frame * pulseSpeed[band] + band * 37) % 101) - 50;
+	int target = percent * baseGain[band] / 100 +
+		punch * punchGain[band] / 100 +
+		pulse * pulseDepth[band] * (percent + punch) / 10000;
+
+	if (band >= 3 && punch > 5) {
+		target += ((frame + band * 11) % 3) * punch / 2;
+	}
+	if (band == 0 && percent > 35) {
+		target += (percent - 35) / 3;
+	}
+	return clampInt(target, 0, 100);
+}
+
+static int micColumnTarget(int column, int frame, const int* bandLevels) {
+	const int band = micBandForColumn(column);
+	if (bandLevels[band] <= 1 &&
+			(band == 0 || bandLevels[band - 1] <= 1) &&
+			(band == MIC_BAND_COUNT - 1 || bandLevels[band + 1] <= 1)) {
 		return 1;
 	}
 
-	const int waveA = (frame * 3 + column * 5) % 17;
-	const int waveB = (frame + column * 11) % 13;
-	const int response = 62 + ((column * 29 + frame * 7) % 55);
-	int target = 1 + activeRows * response / 100;
-	target += (waveA - 8) * activeRows / 42;
-	target += (waveB - 6) * activeRows / 58;
+	int target = bandLevels[band];
+	if (band > 0) {
+		target = target * 78 / 100 + bandLevels[band - 1] * 22 / 100;
+	}
+	if (band < MIC_BAND_COUNT - 1) {
+		target = target * 82 / 100 + bandLevels[band + 1] * 18 / 100;
+	}
+
+	const int rippleA = ((frame * (band + 2) + column * 7) % 17) - 8;
+	const int rippleB = ((frame * 3 + column * 13) % 11) - 5;
+	const int texture = ((column * 31 + frame * (band + 5)) % 9) - 4;
+	target += rippleA * (band + 2) / 5;
+	target += rippleB * (band + 1) / 6;
+	target += texture;
+
+	if (band >= 3 && ((frame + column * 5) % 7) == 0) {
+		target += 2 + band;
+	}
 	return clampInt(target, 1, DISPLAY_HEIGHT);
 }
 
@@ -191,6 +251,10 @@ FunctionsPage::FunctionsPage()
 	  mLastIpQueryMs(0) {
 	for (int i = 0; i < MIC_BAR_COUNT; ++i) {
 		mMicColumnLevels[i] = 1;
+		mMicPeakLevels[i] = 1;
+	}
+	for (int i = 0; i < MIC_BAND_COUNT; ++i) {
+		mMicBandLevels[i] = 1;
 	}
 }
 
@@ -476,49 +540,84 @@ void FunctionsPage::drawIpAddress(Surface& surface, uint64_t currentMs) {
 }
 
 void FunctionsPage::drawMicLight(Surface& surface) {
+	const int previousPercent = mMicPercent;
 	int raw = McuManager::getInstance().queryMicValue();
 	if (raw >= 0) {
-		mMicPercent = clampInt(raw * 100 / 65535, 0, 100);
+		const int percent = clampInt(raw * 100 / 65535, 0, 100);
+		if (percent <= MIC_RAW_NOISE_GATE_PERCENT) {
+			mMicPercent = 0;
+		} else {
+			mMicPercent = clampInt(
+				(percent - MIC_RAW_NOISE_GATE_PERCENT) * 190 /
+				(100 - MIC_RAW_NOISE_GATE_PERCENT) + 7,
+				0, 100);
+		}
 	}
 	if (mMicPercent <= MIC_IDLE_PERCENT) {
 		mMicPercent = 0;
 	} else {
-		mMicFrame++;
+		mMicHasTriggered = true;
+	}
+	mMicFrame += 2;
+
+	const int punch = clampInt(mMicPercent - previousPercent, 0, 100);
+	static const int attackSpeed[MIC_BAND_COUNT] = { 2, 4, 5, 7, 9 };
+	static const int decaySpeed[MIC_BAND_COUNT] = { 1, 1, 2, 3, 4 };
+	for (int band = 0; band < MIC_BAND_COUNT; ++band) {
+		const int target = percentToRows(
+			micBandTargetPercent(band, mMicPercent, punch, mMicFrame));
+		if (target >= mMicBandLevels[band]) {
+			mMicBandLevels[band] = clampInt(
+				mMicBandLevels[band] + attackSpeed[band],
+				1, target);
+		} else {
+			mMicBandLevels[band] = clampInt(
+				mMicBandLevels[band] - decaySpeed[band],
+				target, DISPLAY_HEIGHT);
+		}
 	}
 
-	const int activeRows = mMicPercent * (DISPLAY_HEIGHT - 1) / 100;
-	static const int weights[MIC_BAR_COUNT] = {
-		72, 86, 102, 116, 96, 126, 110, 122, 100, 114, 92, 84, 74
-	};
+	drawMicLightText(surface);
 
 	for (int i = 0; i < MIC_BAR_COUNT; ++i) {
-		const int x = i * (MIC_BAR_WIDTH + MIC_BAR_GAP);
-		int height = 1;
-		if (activeRows > 0) {
-			const int motion = ((mMicFrame + i * 3) % 5) - 2;
-			height += activeRows * (weights[i] + motion * 4) / 100;
-			height = clampInt(height, 1, DISPLAY_HEIGHT);
+		const int target = micColumnTarget(i, mMicFrame, mMicBandLevels);
+		if (target >= mMicColumnLevels[i]) {
+			mMicColumnLevels[i] = target;
+		} else {
+			const int band = micBandForColumn(i);
+			const int fallSpeed = 1 + band / 2 + ((i + mMicFrame) % 2);
+			mMicColumnLevels[i] = clampInt(
+				mMicColumnLevels[i] - fallSpeed, target, DISPLAY_HEIGHT);
 		}
 
-		for (int y = DISPLAY_HEIGHT - height; y < DISPLAY_HEIGHT; ++y) {
+		if (mMicColumnLevels[i] >= mMicPeakLevels[i]) {
+			mMicPeakLevels[i] = mMicColumnLevels[i];
+		} else if (((mMicFrame + i) % 3) == 0) {
+			mMicPeakLevels[i] = clampInt(
+				mMicPeakLevels[i] - 1, mMicColumnLevels[i], DISPLAY_HEIGHT);
+		}
+
+		for (int y = DISPLAY_HEIGHT - mMicColumnLevels[i]; y < DISPLAY_HEIGHT; ++y) {
 			const int rowFromBottom = DISPLAY_HEIGHT - 1 - y;
-			Painter::getInstance().drawRect(
-				surface, x, y, MIC_BAR_WIDTH, 1,
-				micGradientColor(rowFromBottom), true);
+			Painter::getInstance().drawPixel(
+				surface, i, y,
+				micGradientColor(rowFromBottom, mMicPaletteIndex));
 		}
-	}
 
-	if (mMicPercent == 0) {
-		drawMicLightText(surface);
+		if (mMicHasTriggered && mMicPeakLevels[i] > 1) {
+			Painter::getInstance().drawPixel(
+				surface, i, DISPLAY_HEIGHT - mMicPeakLevels[i], COLOR_WHITE);
+		}
 	}
 }
 
 void FunctionsPage::drawMicLightText(Surface& surface) {
-	drawGradientText(surface, "MIC", 7);
-	drawGradientText(surface, "LIGHT", 13);
+	drawGradientText(surface, "MUSIC", 7, mMicHasTriggered);
+	drawGradientText(surface, "LIGHT", 13, mMicHasTriggered);
 }
 
-void FunctionsPage::drawGradientText(Surface& surface, const char* text, int y) {
+void FunctionsPage::drawGradientText(Surface& surface, const char* text, int y,
+		bool dim) {
 	const int len = static_cast<int>(strlen(text));
 	if (len <= 0) {
 		return;
@@ -527,10 +626,32 @@ void FunctionsPage::drawGradientText(Surface& surface, const char* text, int y) 
 	const int width = Painter::getInstance().getTextWidth(text, 0);
 	int x = (DISPLAY_WIDTH - width) / 2;
 	for (int i = 0; i < len; ++i) {
-		const int row = len == 1 ? 0 : i * (DISPLAY_HEIGHT - 1) / (len - 1);
-		Painter::getInstance().drawChar(
-			surface, x, y, text[i], micGradientColor(row));
-		x += Painter::getInstance().getTextWidth(std::string(1, text[i]), 0);
+		const char c = text[i];
+		if (c < TomThumb.first || c > TomThumb.last) {
+			x += 2;
+			continue;
+		}
+
+		GFXglyph* glyph = &TomThumb.glyph[c - TomThumb.first];
+		const uint8_t* bitmap = &TomThumb.bitmap[glyph->bitmapOffset];
+		for (int gy = 0; gy < glyph->height; ++gy) {
+			uint8_t rowBits = bitmap[gy];
+			for (int gx = 0; gx < glyph->width; ++gx) {
+				if ((rowBits & (0x80 >> gx)) == 0) {
+					continue;
+				}
+
+				const int px = x + glyph->xOffset + gx;
+				const int py = y + glyph->yOffset + gy;
+				Color color = micGradientColor(
+					DISPLAY_HEIGHT - 1 - py, mMicPaletteIndex);
+				if (dim) {
+					color = scaleColor(color, 18);
+				}
+				Painter::getInstance().drawPixel(surface, px, py, color);
+			}
+		}
+		x += glyph->xAdvance;
 	}
 }
 
@@ -543,8 +664,18 @@ void FunctionsPage::updateMicReportState() {
 	McuManager::getInstance().setAutoMicReport(shouldEnable);
 	mMicAutoReportEnabled = shouldEnable;
 	if (shouldEnable) {
+		mMicPaletteIndex = (mMicPaletteIndex + 1 +
+			static_cast<int>(nowMs() % MIC_PALETTE_COUNT)) % MIC_PALETTE_COUNT;
 		mMicPercent = 0;
 		mMicFrame = 0;
+		mMicHasTriggered = false;
+		for (int i = 0; i < MIC_BAR_COUNT; ++i) {
+			mMicColumnLevels[i] = 1;
+			mMicPeakLevels[i] = 1;
+		}
+		for (int i = 0; i < MIC_BAND_COUNT; ++i) {
+			mMicBandLevels[i] = 1;
+		}
 	}
 }
 
