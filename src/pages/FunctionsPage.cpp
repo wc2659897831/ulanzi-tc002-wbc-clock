@@ -802,11 +802,25 @@ void FunctionsPage::drawWeatherMain(Surface& surface,
 		const WeatherService::Snapshot& weather) {
 	drawWeatherIcon(surface, 1, 0, weather.weatherCode, false);
 
-	char top[10] = {0};
-	snprintf(top, sizeof(top), "%dC", weather.temperatureC);
-	char bottom[14] = {0};
-	snprintf(bottom, sizeof(bottom), "FL %d", weather.apparentTemperatureC);
-	drawRightText(surface, top, bottom, COLOR_WHITE, COLOR_YELLOW);
+	const int temp = clampInt(weather.temperatureC, 0, 99);
+	const bool twoDigits = temp >= 10;
+	const int digitCount = twoDigits ? 2 : 1;
+	const int digitWidth = digitCount * LARGE_DIGIT_WIDTH +
+		(digitCount - 1) * LARGE_CHAR_GAP;
+	const int cWidth = LARGE_DIGIT_WIDTH;
+	const int totalWidth = digitWidth + 2 + cWidth;
+	int x = 20 + (DISPLAY_WIDTH - 20 - totalWidth) / 2;
+	const int y = 3;
+
+	if (twoDigits) {
+		drawScaledDigit(surface, x, y, temp / 10, LARGE_DIGIT_SCALE,
+			COLOR_WHITE);
+		x += LARGE_DIGIT_WIDTH + LARGE_CHAR_GAP;
+	}
+	drawScaledDigit(surface, x, y, temp % 10, LARGE_DIGIT_SCALE,
+		COLOR_WHITE);
+	x += LARGE_DIGIT_WIDTH + 2;
+	drawLargeCelsius(surface, x, y, COLOR_YELLOW);
 
 	if (weather.refreshing) {
 		Painter::getInstance().drawPixel(
@@ -816,9 +830,9 @@ void FunctionsPage::drawWeatherMain(Surface& surface,
 
 void FunctionsPage::drawWeatherAtmosphere(Surface& surface,
 		const WeatherService::Snapshot& weather) {
-	drawFogIcon(surface, 1, 0, false);
+	drawHumidityWindIcon(surface, 1, 0);
 	char top[14] = {0};
-	snprintf(top, sizeof(top), "HUM %d", weather.humidityPercent);
+	snprintf(top, sizeof(top), "HUM %d%%", weather.humidityPercent);
 	char bottom[14] = {0};
 	if (weather.pressureHPa > 0) {
 		snprintf(bottom, sizeof(bottom), "P %d", weather.pressureHPa);
@@ -826,47 +840,11 @@ void FunctionsPage::drawWeatherAtmosphere(Surface& surface,
 		snprintf(bottom, sizeof(bottom), "SPD %d", weather.windSpeedKmh);
 	}
 	drawRightText(surface, top, bottom, COLOR_SKY, COLOR_WHITE);
-
-	const int arrowX = 44;
-	const int arrowY = 4;
-	const int direction = ((weather.windDirectionDeg + 45) / 90) % 4;
-	if (direction == 0) {
-		Painter::getInstance().drawLine(surface, arrowX, arrowY + 5,
-			arrowX, arrowY, COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX - 1, arrowY + 1,
-			COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX + 1, arrowY + 1,
-			COLOR_GREEN);
-	} else if (direction == 1) {
-		Painter::getInstance().drawLine(surface, arrowX - 3, arrowY + 3,
-			arrowX + 3, arrowY + 3, COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX + 2, arrowY + 2,
-			COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX + 2, arrowY + 4,
-			COLOR_GREEN);
-	} else if (direction == 2) {
-		Painter::getInstance().drawLine(surface, arrowX, arrowY,
-			arrowX, arrowY + 5, COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX - 1, arrowY + 4,
-			COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX + 1, arrowY + 4,
-			COLOR_GREEN);
-	} else {
-		Painter::getInstance().drawLine(surface, arrowX + 3, arrowY + 3,
-			arrowX - 3, arrowY + 3, COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX - 2, arrowY + 2,
-			COLOR_GREEN);
-		Painter::getInstance().drawPixel(surface, arrowX - 2, arrowY + 4,
-			COLOR_GREEN);
-	}
-	char wind[8] = {0};
-	snprintf(wind, sizeof(wind), "%dK", weather.windSpeedKmh);
-	Painter::getInstance().drawText(surface, 41, 14, wind, COLOR_GREEN, 0);
 }
 
 void FunctionsPage::drawWeatherAir(Surface& surface,
 		const WeatherService::Snapshot& weather) {
-	drawCloudIcon(surface, 1, 0, false);
+	drawAirQualityIcon(surface, 1, 0, weather.aqi);
 	if (!weather.hasAir) {
 		drawRightText(surface, "AIR", "WAIT", COLOR_WHITE, COLOR_CYAN);
 		return;
@@ -888,9 +866,9 @@ void FunctionsPage::drawWeatherAir(Surface& surface,
 
 void FunctionsPage::drawWeatherForecast(Surface& surface,
 		const WeatherService::Snapshot& weather) {
-	drawWeatherIcon(surface, 1, 0, weather.weatherCode, false);
+	drawForecastIcon(surface, 1, 0, weather.weatherCode);
 	char top[14] = {0};
-	snprintf(top, sizeof(top), "H%dL%d", weather.tempMaxC, weather.tempMinC);
+	snprintf(top, sizeof(top), "H%d L%d", weather.tempMaxC, weather.tempMinC);
 	char bottom[14] = {0};
 	snprintf(bottom, sizeof(bottom), "RAIN %d", weather.precipitationPercent);
 	drawRightText(surface, top, bottom, COLOR_ORANGE, COLOR_SKY);
@@ -1013,6 +991,91 @@ void FunctionsPage::drawFogIcon(Surface& surface, int x, int y, bool small) {
 	}
 }
 
+void FunctionsPage::drawHumidityWindIcon(Surface& surface, int x, int y) {
+	const int shimmer = (mWeatherFrame / 3) % 5;
+	Painter::getInstance().drawLine(surface, x + 6, y + 2,
+		x + 3, y + 7, COLOR_CYAN);
+	Painter::getInstance().drawLine(surface, x + 6, y + 2,
+		x + 9, y + 7, COLOR_CYAN);
+	Painter::getInstance().drawCircle(surface, x + 6, y + 9, 4,
+		COLOR_BLUE, true);
+	Painter::getInstance().drawCircle(surface, x + 6, y + 8, 3,
+		COLOR_CYAN, true);
+	Painter::getInstance().drawPixel(surface, x + 5, y + 6 + shimmer / 2,
+		COLOR_WHITE);
+
+	for (int row = 0; row < 3; ++row) {
+		const int fy = y + 4 + row * 4;
+		const int drift = (mWeatherFrame / 2 + row * 2) % 5;
+		const Color color = row == 1 ? COLOR_GREEN : COLOR_SKY;
+		Painter::getInstance().drawLine(surface, x + 11, fy,
+			x + 17, fy, color);
+		Painter::getInstance().drawPixel(surface, x + 11 + drift, fy - 1,
+			COLOR_WHITE);
+		Painter::getInstance().drawPixel(surface, x + 17, fy + 1, color);
+	}
+}
+
+void FunctionsPage::drawAirQualityIcon(Surface& surface, int x, int y,
+		int aqi) {
+	const Color quality = aqiColor(aqi);
+	Painter::getInstance().drawLine(surface, x + 2, y + 14,
+		x + 16, y + 14, COLOR_DIM);
+
+	const int level = clampInt(aqi, 0, 200) * 10 / 200;
+	for (int i = 0; i < 4; ++i) {
+		const int barX = x + 3 + i * 3;
+		const int barH = clampInt(level + 2 + i, 2, 12);
+		const Color barColor =
+			i == 0 ? COLOR_GREEN :
+			(i == 1 ? COLOR_YELLOW : (i == 2 ? COLOR_ORANGE : COLOR_RED));
+		Painter::getInstance().drawRect(surface, barX, y + 14 - barH,
+			2, barH, i * 50 <= aqi ? barColor : scaleColor(barColor, 20), true);
+	}
+
+	for (int i = 0; i < 5; ++i) {
+		const int px = x + 2 + ((mWeatherFrame + i * 5) % 15);
+		const int py = y + 2 + ((i * 3 + mWeatherFrame / 2) % 8);
+		Painter::getInstance().drawPixel(surface, px, py,
+			i % 2 == 0 ? quality : COLOR_WHITE);
+	}
+	drawWeatherSparkle(surface, x + 16, y + 3, quality);
+}
+
+void FunctionsPage::drawForecastIcon(Surface& surface, int x, int y,
+		int code) {
+	Painter::getInstance().drawRect(surface, x + 2, y + 2,
+		14, 12, COLOR_WHITE, false);
+	Painter::getInstance().drawLine(surface, x + 2, y + 5,
+		x + 15, y + 5, COLOR_SKY);
+	Painter::getInstance().drawPixel(surface, x + 5, y + 1, COLOR_ORANGE);
+	Painter::getInstance().drawPixel(surface, x + 12, y + 1, COLOR_ORANGE);
+
+	const int pulse = (mWeatherFrame / 4) % 2;
+	Painter::getInstance().drawCircle(surface, x + 6, y + 9, 3,
+		COLOR_ORANGE, true);
+	Painter::getInstance().drawPixel(surface, x + 6, y + 6 - pulse,
+		COLOR_YELLOW);
+	Painter::getInstance().drawPixel(surface, x + 3, y + 9, COLOR_YELLOW);
+
+	if (weatherKindForCode(code) == WEATHER_RAIN ||
+			weatherKindForCode(code) == WEATHER_THUNDER) {
+		for (int i = 0; i < 3; ++i) {
+			const int dropY = y + 8 + ((mWeatherFrame + i * 2) % 5);
+			Painter::getInstance().drawPixel(surface, x + 10 + i * 2,
+				dropY, COLOR_CYAN);
+		}
+	} else {
+		const int drift = (mWeatherFrame / 5) % 2;
+		Painter::getInstance().drawCircle(surface, x + 10 + drift, y + 10,
+			2, COLOR_WHITE, true);
+		Painter::getInstance().drawCircle(surface, x + 13 + drift, y + 9,
+			2, COLOR_SKY, true);
+		Painter::getInstance().drawRect(surface, x + 9 + drift, y + 10,
+			6, 2, COLOR_WHITE, true);
+	}
+}
+
 void FunctionsPage::drawWeatherSparkle(Surface& surface, int x, int y,
 		const Color& color) {
 	Painter::getInstance().drawPixel(surface, x, y, color);
@@ -1057,6 +1120,29 @@ int FunctionsPage::drawLargeChar(Surface& surface, int x, int y, char c,
 		return DOT_WIDTH;
 	}
 	return LARGE_DIGIT_SCALE;
+}
+
+void FunctionsPage::drawLargeCelsius(Surface& surface, int x, int y,
+		const Color& color) {
+	static const char* bitmap =
+		"111"
+		"100"
+		"100"
+		"100"
+		"111";
+	for (int row = 0; row < 5; ++row) {
+		for (int col = 0; col < 3; ++col) {
+			if (bitmap[row * 3 + col] != '1') {
+				continue;
+			}
+			Painter::getInstance().drawRect(surface,
+				x + col * LARGE_DIGIT_SCALE,
+				y + row * LARGE_DIGIT_SCALE,
+				LARGE_DIGIT_SCALE,
+				LARGE_DIGIT_SCALE,
+				color, true);
+		}
+	}
 }
 
 int FunctionsPage::largeCharWidth(char c) const {

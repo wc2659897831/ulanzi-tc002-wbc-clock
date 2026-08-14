@@ -89,12 +89,16 @@ private:
 	void drawThunderIcon(Surface& surface, int x, int y, bool small);
 	void drawSnowIcon(Surface& surface, int x, int y, bool small);
 	void drawFogIcon(Surface& surface, int x, int y, bool small);
+	void drawHumidityWindIcon(Surface& surface, int x, int y);
+	void drawAirQualityIcon(Surface& surface, int x, int y, int aqi);
+	void drawForecastIcon(Surface& surface, int x, int y, int code);
 	void drawWeatherSparkle(Surface& surface, int x, int y,
 			const Color& color);
 	void drawRightText(Surface& surface, const char* top, const char* bottom,
 			const Color& topColor, const Color& bottomColor);
 	std::string currentIpAddress(uint64_t currentMs);
 	int drawLargeChar(Surface& surface, int x, int y, char c, const Color& color);
+	void drawLargeCelsius(Surface& surface, int x, int y, const Color& color);
 	void drawScaledDigit(Surface& surface, int x, int y, int digit,
 			int scale, const Color& color);
 	int largeCharWidth(char c) const;
