@@ -15,6 +15,7 @@ public:
 	void setTopMenuVisible(bool visible);
 	void setStreamDisplayEnabled(bool enabled);
 	bool isStreamDisplayEnabled();
+	bool isNoticeActive();
 	void notifyStreamData();
 	void setNoticeCallback(stream_notice_callback_t callback);
 	void apply(std::vector<uint8_t>& rgbData);
@@ -34,6 +35,7 @@ private:
 	bool mTopMenuVisible;
 	bool mStreamDisplayEnabled;
 	uint64_t mNoticeUntilMs;
+	uint32_t mNoticeSequence;
 	stream_notice_callback_t mNoticeCallback;
 };
 

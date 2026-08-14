@@ -28,6 +28,8 @@ namespace {
 
 #define TIMER_MENU_CLOCK_REFRESH 1
 #define TIMER_MENU_CLOCK_REFRESH_TIME 500
+#define TIMER_FAST_REFRESH 2
+#define TIMER_FAST_REFRESH_TIME 100
 
 enum MenuDepth {
 	MENU_DEPTH_TOP = 0,
@@ -39,6 +41,7 @@ static int gTestPageIndex = 0;
 static MenuDepth gMenuDepth = MENU_DEPTH_TOP;
 static int gClockCountdownMs = 3000;
 static int gLastClockCountdownValue = -1;
+static bool gStreamNoticeNeedsRefresh = false;
 
 static const char* TEST_PAGE_NAMES[] = {
 	"BtnTestPage",
@@ -80,8 +83,10 @@ static void drawTopMenu() {
 static void showChildIndicator() {
 	if (gTopPageIndex == MenuPage::TOP_TEST) {
 		MenuIndicator::getInstance().show(TEST_PAGE_COUNT, gTestPageIndex);
-	} else if (gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
+	} else if (gTopPageIndex == MenuPage::TOP_CLOCK) {
 		MenuIndicator::getInstance().show(2, 0);
+	} else if (gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
+		MenuIndicator::getInstance().show(3, 0);
 	} else {
 		MenuIndicator::getInstance().hide();
 	}
@@ -119,6 +124,7 @@ static void exitChildPage() {
 
 static void streamNoticeCb() {
 	if (gMenuDepth == MENU_DEPTH_TOP) {
+		gStreamNoticeNeedsRefresh = true;
 		PageManager::getInstance().drawCurrentPage();
 	}
 }
@@ -150,6 +156,7 @@ static void updateClockTopCountdown() {
 
 static void handleChildScroll(int delta) {
 	if (gTopPageIndex == MenuPage::TOP_SETTINGS ||
+			gTopPageIndex == MenuPage::TOP_CLOCK ||
 			gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
 		PageManager::getInstance().onKeyEvent(
 			delta > 0 ? E_KEYCODE_CLOCKWISE : E_KEYCODE_ANTI_CLOCKWISE, 0);
@@ -240,7 +247,8 @@ void loadConfigAndStart() {
 }
 
 static S_ACTIVITY_TIMEER REGISTER_ACTIVITY_TIMER_TAB[] = {
-	{TIMER_MENU_CLOCK_REFRESH, TIMER_MENU_CLOCK_REFRESH_TIME}
+	{TIMER_MENU_CLOCK_REFRESH, TIMER_MENU_CLOCK_REFRESH_TIME},
+	{TIMER_FAST_REFRESH, TIMER_FAST_REFRESH_TIME}
 };
 
 /**
@@ -325,11 +333,26 @@ static bool onUI_Timer(int id){
 	switch (id) {
 		case TIMER_MENU_CLOCK_REFRESH:
 			if (gMenuDepth == MENU_DEPTH_CHILD &&
-					(gTopPageIndex == MenuPage::TOP_CLOCK ||
-					 gTopPageIndex == MenuPage::TOP_FUNCTIONS)) {
+					gTopPageIndex == MenuPage::TOP_CLOCK) {
 				PageManager::getInstance().drawCurrentPage();
 			}
 			updateClockTopCountdown();
+			break;
+		case TIMER_FAST_REFRESH:
+			if (gMenuDepth == MENU_DEPTH_CHILD &&
+					gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
+				auto* page = static_cast<FunctionsPage*>(
+					PageManager::getInstance().getPage("FunctionsPage"));
+				if (page && page->needsFastRefresh()) {
+					PageManager::getInstance().drawCurrentPage();
+				}
+			} else if (gMenuDepth == MENU_DEPTH_TOP &&
+					(gStreamNoticeNeedsRefresh ||
+					 StreamNoticeIndicator::getInstance().isNoticeActive())) {
+				PageManager::getInstance().drawCurrentPage();
+				gStreamNoticeNeedsRefresh =
+					StreamNoticeIndicator::getInstance().isNoticeActive();
+			}
 			break;
 		default:
 			break;

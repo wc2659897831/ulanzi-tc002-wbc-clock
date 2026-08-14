@@ -1,6 +1,8 @@
 #include "managers/StreamNoticeIndicator.h"
 
+#include <thread>
 #include <sys/time.h>
+#include <unistd.h>
 
 namespace {
 
@@ -8,7 +10,7 @@ namespace {
 #define DISPLAY_HEIGHT 16
 #define NOTICE_X (DISPLAY_WIDTH - 1)
 #define NOTICE_Y (DISPLAY_HEIGHT - 1)
-#define NOTICE_DURATION_MS 900
+#define NOTICE_DURATION_MS 100
 
 } // namespace
 
@@ -21,6 +23,7 @@ StreamNoticeIndicator::StreamNoticeIndicator()
 	: mTopMenuVisible(false),
 	  mStreamDisplayEnabled(false),
 	  mNoticeUntilMs(0),
+	  mNoticeSequence(0),
 	  mNoticeCallback(nullptr) {
 }
 
@@ -48,19 +51,38 @@ bool StreamNoticeIndicator::isStreamDisplayEnabled() {
 	return mStreamDisplayEnabled;
 }
 
+bool StreamNoticeIndicator::isNoticeActive() {
+	Mutex::Autolock lock(mMutex);
+	return mTopMenuVisible && !mStreamDisplayEnabled && nowMs() <= mNoticeUntilMs;
+}
+
 void StreamNoticeIndicator::notifyStreamData() {
 	stream_notice_callback_t callback = nullptr;
+	uint32_t sequence = 0;
 	{
 		Mutex::Autolock lock(mMutex);
 		if (mStreamDisplayEnabled) {
 			return;
 		}
 		mNoticeUntilMs = nowMs() + NOTICE_DURATION_MS;
+		sequence = ++mNoticeSequence;
 		callback = mNoticeCallback;
 	}
 
 	if (callback) {
 		callback();
+		std::thread([this, callback, sequence]() {
+			usleep(NOTICE_DURATION_MS * 1000);
+			bool shouldRefresh = false;
+			{
+				Mutex::Autolock lock(mMutex);
+				shouldRefresh = sequence == mNoticeSequence &&
+					!mStreamDisplayEnabled && nowMs() >= mNoticeUntilMs;
+			}
+			if (shouldRefresh) {
+				callback();
+			}
+		}).detach();
 	}
 }
 

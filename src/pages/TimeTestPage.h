@@ -5,6 +5,7 @@
 #include "utils/Surface.h"
 #include "utils/Painter.h"
 #include "base/base.h"
+#include "managers/MenuIndicator.h"
 #include <ctime>
 #include <cstdlib>
 #include <stdint.h>
@@ -28,6 +29,9 @@ static const int WEEKDAY_DOT_W = 6;
 static const int WEEKDAY_DOT_H = 2;
 static const int HOURLY_FLASH_MS = 3000;
 static const int HOURLY_FLASH_INTERVAL_MS = 500;
+static const int VIEW_TIME = 0;
+static const int VIEW_DATE = 1;
+static const int VIEW_COUNT = 2;
 
 static const char* DIGITS[] = {
     "111"
@@ -96,6 +100,7 @@ class TimeTestPage : public PageBase {
 public:
     TimeTestPage()
         : PageBase("TimeTestPage"),
+          mViewIndex(time_test_page::VIEW_TIME),
           mLastHourlyKey(-1),
           mHourlyFlashStartMs(0),
           mHourlyFlashSeed(0) {}
@@ -114,43 +119,24 @@ public:
         gmtime_r(&now, &timeInfo);
 
         updateHourlyFlash(timeInfo, rawNowMs);
-        const Color timeColor = currentTimeColor(rawNowMs);
-
-        int hour = timeInfo.tm_hour;
-        int minute = timeInfo.tm_min;
-        int second = timeInfo.tm_sec;
-        int totalWidth = time_test_page::DIGIT_WIDTH * 6
-                       + time_test_page::DIGIT_GAP * 5
-                       + time_test_page::COLON_WIDTH * 2;
-        int x = (time_test_page::DISPLAY_WIDTH - totalWidth) / 2;
-        int y = 2;
-
-        drawDigit(surface, x, y, hour / 10, timeColor);
-        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
-        drawDigit(surface, x, y, hour % 10, timeColor);
-        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
-        drawColon(surface, x, y, true, timeColor);
-        x += time_test_page::COLON_WIDTH + time_test_page::DIGIT_GAP;
-        drawDigit(surface, x, y, minute / 10, timeColor);
-        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
-        drawDigit(surface, x, y, minute % 10, timeColor);
-        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
-        drawColon(surface, x, y, true, timeColor);
-        x += time_test_page::COLON_WIDTH + time_test_page::DIGIT_GAP;
-        drawDigit(surface, x, y, second / 10, timeColor);
-        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
-        drawDigit(surface, x, y, second % 10, timeColor);
+        if (mViewIndex == time_test_page::VIEW_DATE) {
+            drawDateView(surface, timeInfo);
+        } else {
+            drawTimeView(surface, timeInfo, rawNowMs);
+        }
 
         int weekdayIndex = (timeInfo.tm_wday + 6) % 7;
         drawWeekdayDots(surface, weekdayIndex);
 
         std::vector<uint8_t> data;
         surface.extractRGB(data);
+        MenuIndicator::getInstance().show(time_test_page::VIEW_COUNT, mViewIndex);
         sendLedData(data);
     }
 
     virtual void onEnter() override {
         LOGD_TRACE("TimeTestPage: onEnter");
+        MenuIndicator::getInstance().show(time_test_page::VIEW_COUNT, mViewIndex);
     }
 
     virtual void onExit() override {
@@ -158,12 +144,21 @@ public:
     }
 
     virtual bool onKeyEvent(int keyCode, int keyStatus) override {
-        (void) keyCode;
-        (void) keyStatus;
+        if ((keyCode == E_KEYCODE_CLOCKWISE ||
+                keyCode == E_KEYCODE_RIGHT_BUTTON) && keyStatus == 0) {
+            switchView(1);
+            return false;
+        }
+        if ((keyCode == E_KEYCODE_ANTI_CLOCKWISE ||
+                keyCode == E_KEYCODE_LEFT_BUTTON) && keyStatus == 0) {
+            switchView(-1);
+            return false;
+        }
         return true;
     }
 
 private:
+    int mViewIndex;
     int mLastHourlyKey;
     uint64_t mHourlyFlashStartMs;
     uint32_t mHourlyFlashSeed;
@@ -220,6 +215,69 @@ private:
         return colors[colorIndex % count];
     }
 
+    void switchView(int delta) {
+        mViewIndex += delta;
+        while (mViewIndex < 0) {
+            mViewIndex += time_test_page::VIEW_COUNT;
+        }
+        while (mViewIndex >= time_test_page::VIEW_COUNT) {
+            mViewIndex -= time_test_page::VIEW_COUNT;
+        }
+        MenuIndicator::getInstance().show(time_test_page::VIEW_COUNT, mViewIndex);
+        draw();
+    }
+
+    void drawTimeView(Surface& surface, const struct tm& timeInfo, uint64_t rawNowMs) {
+        const Color timeColor = currentTimeColor(rawNowMs);
+        int totalWidth = time_test_page::DIGIT_WIDTH * 6
+                       + time_test_page::DIGIT_GAP * 5
+                       + time_test_page::COLON_WIDTH * 2;
+        int x = (time_test_page::DISPLAY_WIDTH - totalWidth) / 2;
+        int y = 2;
+
+        drawDigit(surface, x, y, timeInfo.tm_hour / 10, timeColor);
+        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
+        drawDigit(surface, x, y, timeInfo.tm_hour % 10, timeColor);
+        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
+        drawColon(surface, x, y, true, timeColor);
+        x += time_test_page::COLON_WIDTH + time_test_page::DIGIT_GAP;
+        drawDigit(surface, x, y, timeInfo.tm_min / 10, timeColor);
+        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
+        drawDigit(surface, x, y, timeInfo.tm_min % 10, timeColor);
+        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
+        drawColon(surface, x, y, true, timeColor);
+        x += time_test_page::COLON_WIDTH + time_test_page::DIGIT_GAP;
+        drawDigit(surface, x, y, timeInfo.tm_sec / 10, timeColor);
+        x += time_test_page::DIGIT_WIDTH + time_test_page::DIGIT_GAP;
+        drawDigit(surface, x, y, timeInfo.tm_sec % 10, timeColor);
+    }
+
+    void drawDateView(Surface& surface, const struct tm& timeInfo) {
+        const int year = timeInfo.tm_year + 1900;
+        const int month = timeInfo.tm_mon + 1;
+        const int day = timeInfo.tm_mday;
+
+        Painter::getInstance().drawLine(surface, 18, 1, 18, 12,
+            time_test_page::COLOR_WEEK_DIM);
+        drawSmallDigit(surface, 1, 2, (year / 1000) % 10, time_test_page::COLOR_WHITE);
+        drawSmallDigit(surface, 5, 2, (year / 100) % 10, time_test_page::COLOR_WHITE);
+        drawSmallDigit(surface, 9, 2, (year / 10) % 10, time_test_page::COLOR_WHITE);
+        drawSmallDigit(surface, 13, 2, year % 10, time_test_page::COLOR_WHITE);
+        Painter::getInstance().drawLine(surface, 1, 9, 16, 9,
+            time_test_page::COLOR_WEEK_DIM);
+        Painter::getInstance().drawPixel(surface, 3, 11, time_test_page::COLOR_WEEK_DIM);
+        Painter::getInstance().drawPixel(surface, 7, 11, time_test_page::COLOR_WEEK_DIM);
+        Painter::getInstance().drawPixel(surface, 11, 11, time_test_page::COLOR_WEEK_DIM);
+        Painter::getInstance().drawPixel(surface, 15, 11, time_test_page::COLOR_WEEK_DIM);
+
+        drawDigit(surface, 21, 2, month / 10, time_test_page::COLOR_WHITE);
+        drawDigit(surface, 28, 2, month % 10, time_test_page::COLOR_WHITE);
+        Painter::getInstance().drawPixel(surface, 35, 11,
+            time_test_page::COLOR_WHITE);
+        drawDigit(surface, 37, 2, day / 10, time_test_page::COLOR_WHITE);
+        drawDigit(surface, 44, 2, day % 10, time_test_page::COLOR_WHITE);
+    }
+
     void drawDigit(Surface& surface, int x, int y, int digit, const Color& color) {
         if (digit < 0 || digit > 9) {
             return;
@@ -239,6 +297,22 @@ private:
                     time_test_page::DIGIT_SCALE,
                     color,
                     true);
+            }
+        }
+    }
+
+    void drawSmallDigit(Surface& surface, int x, int y, int digit, const Color& color) {
+        if (digit < 0 || digit > 9) {
+            return;
+        }
+
+        const char* bitmap = time_test_page::DIGITS[digit];
+        for (int row = 0; row < 5; ++row) {
+            for (int col = 0; col < 3; ++col) {
+                if (bitmap[row * 3 + col] != '1') {
+                    continue;
+                }
+                Painter::getInstance().drawPixel(surface, x + col, y + row, color);
             }
         }
     }

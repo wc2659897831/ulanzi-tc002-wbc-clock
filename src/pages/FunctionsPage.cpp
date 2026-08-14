@@ -7,6 +7,9 @@
 #include "base/base.h"
 #include "managers/MenuIndicator.h"
 #include "managers/McuManager.h"
+#include "net/NetManager.h"
+
+#define WIFIMANAGER NETMANAGER->getWifiManager()
 
 namespace {
 
@@ -14,7 +17,10 @@ static const Color COLOR_BLACK(0, 0, 0);
 static const Color COLOR_WHITE(255, 255, 255);
 static const Color COLOR_DIM(55, 55, 55);
 static const Color COLOR_RED(255, 60, 50);
+static const Color COLOR_RED_DARK(145, 12, 24);
+static const Color COLOR_RED_DEEP(90, 0, 18);
 static const Color COLOR_GREEN(60, 255, 120);
+static const Color COLOR_GREEN_DARK(20, 130, 55);
 static const Color COLOR_YELLOW(255, 210, 60);
 static const Color COLOR_CYAN(60, 220, 255);
 
@@ -22,6 +28,13 @@ static const Color COLOR_CYAN(60, 220, 255);
 #define DISPLAY_HEIGHT 16
 #define POMODORO_SECONDS (25 * 60)
 #define POMODORO_REST_SECONDS (5 * 60)
+#define IP_SCROLL_SPEED_MS 50
+#define IP_QUERY_INTERVAL_MS 2000
+#define LARGE_DIGIT_SCALE 2
+#define LARGE_DIGIT_WIDTH (3 * LARGE_DIGIT_SCALE)
+#define LARGE_DIGIT_HEIGHT (5 * LARGE_DIGIT_SCALE)
+#define LARGE_CHAR_GAP 2
+#define DOT_WIDTH 1
 
 static const char* DIGITS[] = {
 	"111"
@@ -98,7 +111,10 @@ FunctionsPage::FunctionsPage()
 	  mMiddlePressStartMs(0),
 	  mMiddleLongResetDone(false),
 	  mChargeFrame(0),
-	  mTomatoFrame(0) {
+	  mTomatoFrame(0),
+	  mIpScrollStartMs(0),
+	  mCachedIp("192.168.1.13"),
+	  mLastIpQueryMs(0) {
 }
 
 FunctionsPage::~FunctionsPage() {
@@ -163,6 +179,12 @@ bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 	}
 }
 
+bool FunctionsPage::needsFastRefresh() const {
+	return mCurrentFunction == FUNC_IP ||
+		(mCurrentFunction == FUNC_POMODORO &&
+			(mPomodoroRunning || mMiddlePressStartMs > 0));
+}
+
 void FunctionsPage::draw() {
 	uint64_t currentMs = nowMs();
 	updatePomodoro(currentMs);
@@ -171,6 +193,8 @@ void FunctionsPage::draw() {
 
 	if (mCurrentFunction == FUNC_BATTERY) {
 		drawBattery(surface);
+	} else if (mCurrentFunction == FUNC_IP) {
+		drawIpAddress(surface, currentMs);
 	} else {
 		drawPomodoro(surface);
 	}
@@ -195,6 +219,9 @@ void FunctionsPage::switchFunction(int delta) {
 	}
 	while (mCurrentFunction >= FUNC_COUNT) {
 		mCurrentFunction -= FUNC_COUNT;
+	}
+	if (mCurrentFunction == FUNC_IP) {
+		mIpScrollStartMs = nowMs();
 	}
 	MenuIndicator::getInstance().show(FUNC_COUNT, mCurrentFunction);
 	draw();
@@ -258,15 +285,15 @@ void FunctionsPage::updateMiddleLongPress(uint64_t currentMs) {
 }
 
 void FunctionsPage::drawPomodoro(Surface& surface) {
-	drawTomatoIcon(surface, 1, 5);
+	drawTomatoIcon(surface, 1, 1);
 	const int minutes = mPomodoroRemainingSec / 60;
 	const int seconds = mPomodoroRemainingSec % 60;
 	const Color textColor = mPomodoroResting ? COLOR_YELLOW : COLOR_WHITE;
 	const Color colonColor = mPomodoroRunning ? COLOR_WHITE : COLOR_YELLOW;
-	drawTwoDigitNumber(surface, 14, 13, minutes, textColor);
-	Painter::getInstance().drawRect(surface, 30, 5, 2, 2, colonColor, true);
-	Painter::getInstance().drawRect(surface, 30, 10, 2, 2, colonColor, true);
-	drawTwoDigitNumber(surface, 34, 13, seconds, textColor);
+	drawTwoDigitNumber(surface, 15, 13, minutes, textColor);
+	Painter::getInstance().drawRect(surface, 31, 5, 2, 2, colonColor, true);
+	Painter::getInstance().drawRect(surface, 31, 10, 2, 2, colonColor, true);
+	drawTwoDigitNumber(surface, 35, 13, seconds, textColor);
 	if (mPomodoroRunning) {
 		mTomatoFrame++;
 	}
@@ -274,25 +301,42 @@ void FunctionsPage::drawPomodoro(Surface& surface) {
 
 void FunctionsPage::drawTomatoIcon(Surface& surface, int x, int y) {
 	static const int8_t shine[][2] = {
-		{3, 2}, {6, 3}, {7, 6}, {4, 8}, {1, 6}, {1, 3}
+		{3, 3}, {5, 2}, {8, 3}, {9, 6},
+		{7, 9}, {4, 9}, {2, 7}, {2, 4}
 	};
-	const int frame = mTomatoFrame % 6;
+	const int frame = mTomatoFrame % 8;
 
-	Painter::getInstance().drawRect(surface, x + 2, y + 2, 8, 8, COLOR_RED, true);
-	Painter::getInstance().drawPixel(surface, x + 1, y + 4, COLOR_RED);
-	Painter::getInstance().drawPixel(surface, x + 1, y + 7, COLOR_RED);
-	Painter::getInstance().drawPixel(surface, x + 10, y + 4, COLOR_RED);
-	Painter::getInstance().drawPixel(surface, x + 10, y + 7, COLOR_RED);
-	Painter::getInstance().drawPixel(surface, x + 3, y + 1, COLOR_GREEN);
-	Painter::getInstance().drawPixel(surface, x + 4, y, COLOR_GREEN);
-	Painter::getInstance().drawPixel(surface, x + 5, y + 1, COLOR_GREEN);
-	Painter::getInstance().drawPixel(surface, x + 6, y, COLOR_GREEN);
-	Painter::getInstance().drawPixel(surface, x + 7, y + 1, COLOR_GREEN);
+	Painter::getInstance().drawCircle(surface, x + 6, y + 7, 5, COLOR_RED_DEEP, true);
+	Painter::getInstance().drawCircle(surface, x + 5, y + 5, 4, COLOR_RED_DARK, true);
+	Painter::getInstance().drawCircle(surface, x + 8, y + 5, 4, COLOR_RED_DARK, true);
+	Painter::getInstance().drawCircle(surface, x + 4, y + 8, 4, COLOR_RED_DARK, true);
+	Painter::getInstance().drawCircle(surface, x + 8, y + 8, 4, COLOR_RED_DARK, true);
+	Painter::getInstance().drawCircle(surface, x + 6, y + 6, 5, COLOR_RED, true);
+
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 3, y + 3, COLOR_RED_DARK);
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 9, y + 3, COLOR_RED_DARK);
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 2, y + 8, COLOR_RED_DARK);
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 9, y + 9, COLOR_RED_DARK);
+
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 6, y + 2, COLOR_GREEN);
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 3, y + 4, COLOR_GREEN);
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 9, y + 4, COLOR_GREEN);
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 4, y + 8, COLOR_GREEN_DARK);
+	Painter::getInstance().drawLine(surface, x + 6, y + 6, x + 8, y + 8, COLOR_GREEN_DARK);
+	Painter::getInstance().drawPixel(surface, x + 6, y + 6, COLOR_YELLOW);
+
 	Painter::getInstance().drawPixel(
 		surface,
 		x + shine[frame][0],
 		y + shine[frame][1],
 		COLOR_WHITE);
+	if (mPomodoroRunning) {
+		Painter::getInstance().drawPixel(
+			surface,
+			x + shine[(frame + 7) % 8][0],
+			y + shine[(frame + 7) % 8][1],
+			COLOR_YELLOW);
+	}
 }
 
 void FunctionsPage::drawBattery(Surface& surface) {
@@ -325,6 +369,95 @@ void FunctionsPage::drawBatteryIcon(Surface& surface, int x, int y, int percent,
 	}
 }
 
+void FunctionsPage::drawIpAddress(Surface& surface, uint64_t currentMs) {
+	const std::string ip = currentIpAddress(currentMs);
+	const int textWidth = largeTextWidth(ip);
+	const int cycleWidth = textWidth + DISPLAY_WIDTH + LARGE_CHAR_GAP;
+	int scrollOffset = 0;
+	if (cycleWidth > 0) {
+		scrollOffset = static_cast<int>(
+			((currentMs - mIpScrollStartMs) / IP_SCROLL_SPEED_MS) % cycleWidth);
+	}
+
+	int x = DISPLAY_WIDTH - scrollOffset;
+	const int y = (DISPLAY_HEIGHT - LARGE_DIGIT_HEIGHT) / 2;
+	for (size_t i = 0; i < ip.size(); ++i) {
+		x += drawLargeChar(surface, x, y, ip[i], COLOR_WHITE);
+		if (i < ip.size() - 1) {
+			x += LARGE_CHAR_GAP;
+		}
+	}
+}
+
+std::string FunctionsPage::currentIpAddress(uint64_t currentMs) {
+	if (currentMs - mLastIpQueryMs < IP_QUERY_INTERVAL_MS && !mCachedIp.empty()) {
+		return mCachedIp;
+	}
+
+	mLastIpQueryMs = currentMs;
+	const char* ip = WIFIMANAGER != nullptr ? WIFIMANAGER->getIp() : nullptr;
+	if (ip != nullptr && ip[0] != '\0' && std::string(ip) != "0.0.0.0") {
+		mCachedIp = ip;
+	} else if (mCachedIp.empty()) {
+		mCachedIp = "192.168.1.13";
+	}
+	return mCachedIp;
+}
+
+int FunctionsPage::drawLargeChar(Surface& surface, int x, int y, char c,
+		const Color& color) {
+	if (c >= '0' && c <= '9') {
+		drawScaledDigit(surface, x, y, c - '0', LARGE_DIGIT_SCALE, color);
+		return LARGE_DIGIT_WIDTH;
+	}
+	if (c == '.') {
+		Painter::getInstance().drawRect(
+			surface, x, y + LARGE_DIGIT_HEIGHT - DOT_WIDTH, DOT_WIDTH,
+			DOT_WIDTH, color, true);
+		return DOT_WIDTH;
+	}
+	return LARGE_DIGIT_SCALE;
+}
+
+int FunctionsPage::largeCharWidth(char c) const {
+	if (c >= '0' && c <= '9') {
+		return LARGE_DIGIT_WIDTH;
+	}
+	if (c == '.') {
+		return DOT_WIDTH;
+	}
+	return LARGE_DIGIT_SCALE;
+}
+
+int FunctionsPage::largeTextWidth(const std::string& text) const {
+	int width = 0;
+	for (size_t i = 0; i < text.size(); ++i) {
+		width += largeCharWidth(text[i]);
+		if (i < text.size() - 1) {
+			width += LARGE_CHAR_GAP;
+		}
+	}
+	return width;
+}
+
+void FunctionsPage::drawScaledDigit(Surface& surface, int x, int y,
+		int digit, int scale, const Color& color) {
+	if (digit < 0 || digit > 9 || scale <= 0) {
+		return;
+	}
+	const char* bitmap = DIGITS[digit];
+	for (int row = 0; row < 5; ++row) {
+		for (int col = 0; col < 3; ++col) {
+			if (bitmap[row * 3 + col] != '1') {
+				continue;
+			}
+			Painter::getInstance().drawRect(
+				surface, x + col * scale, y + row * scale,
+				scale, scale, color, true);
+		}
+	}
+}
+
 void FunctionsPage::drawHeader(Surface& surface, const char* text) {
 	Painter::getInstance().drawText(surface, 0, 4, text, COLOR_DIM, 0);
 }
@@ -336,17 +469,5 @@ void FunctionsPage::drawTwoDigitNumber(Surface& surface, int x, int y, int value
 }
 
 void FunctionsPage::drawDigit(Surface& surface, int x, int y, int digit, const Color& color) {
-	if (digit < 0 || digit > 9) {
-		return;
-	}
-	const char* bitmap = DIGITS[digit];
-	for (int row = 0; row < 5; ++row) {
-		for (int col = 0; col < 3; ++col) {
-			if (bitmap[row * 3 + col] != '1') {
-				continue;
-			}
-			Painter::getInstance().drawRect(
-				surface, x + col * 2, y + row * 2, 2, 2, color, true);
-		}
-	}
+	drawScaledDigit(surface, x, y, digit, 2, color);
 }
