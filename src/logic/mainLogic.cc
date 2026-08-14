@@ -86,7 +86,7 @@ static void showChildIndicator() {
 	} else if (gTopPageIndex == MenuPage::TOP_CLOCK) {
 		MenuIndicator::getInstance().show(2, 0);
 	} else if (gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
-		MenuIndicator::getInstance().show(4, 0);
+		MenuIndicator::getInstance().show(5, 0);
 	} else {
 		MenuIndicator::getInstance().hide();
 	}

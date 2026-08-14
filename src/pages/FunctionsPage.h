@@ -2,6 +2,7 @@
 #define PAGES_FUNCTIONSPAGE_H_
 
 #include "pages/PageBase.h"
+#include "services/WeatherService.h"
 #include "utils/Painter.h"
 #include "utils/Surface.h"
 #include <stdint.h>
@@ -24,6 +25,7 @@ private:
 		FUNC_BATTERY,
 		FUNC_IP,
 		FUNC_MIC_LIGHT,
+		FUNC_WEATHER,
 		FUNC_COUNT
 	};
 
@@ -47,6 +49,9 @@ private:
 	uint64_t mIpScrollStartMs;
 	std::string mCachedIp;
 	uint64_t mLastIpQueryMs;
+	WeatherService mWeatherService;
+	int mWeatherFrame;
+	uint64_t mWeatherPageStartMs;
 
 	uint64_t nowMs() const;
 	void switchFunction(int delta);
@@ -64,6 +69,30 @@ private:
 	void drawMicLightText(Surface& surface);
 	void drawGradientText(Surface& surface, const char* text, int y, bool dim);
 	void updateMicReportState();
+	void updateWeatherState(bool force);
+	void drawWeather(Surface& surface, uint64_t currentMs);
+	void drawWeatherStatus(Surface& surface,
+			const WeatherService::Snapshot& weather, uint64_t currentMs);
+	void drawWeatherMain(Surface& surface,
+			const WeatherService::Snapshot& weather);
+	void drawWeatherAtmosphere(Surface& surface,
+			const WeatherService::Snapshot& weather);
+	void drawWeatherAir(Surface& surface,
+			const WeatherService::Snapshot& weather);
+	void drawWeatherForecast(Surface& surface,
+			const WeatherService::Snapshot& weather);
+	void drawWeatherIcon(Surface& surface, int x, int y, int code,
+			bool isSmall);
+	void drawSunIcon(Surface& surface, int x, int y, bool small);
+	void drawCloudIcon(Surface& surface, int x, int y, bool small);
+	void drawRainIcon(Surface& surface, int x, int y, bool small);
+	void drawThunderIcon(Surface& surface, int x, int y, bool small);
+	void drawSnowIcon(Surface& surface, int x, int y, bool small);
+	void drawFogIcon(Surface& surface, int x, int y, bool small);
+	void drawWeatherSparkle(Surface& surface, int x, int y,
+			const Color& color);
+	void drawRightText(Surface& surface, const char* top, const char* bottom,
+			const Color& topColor, const Color& bottomColor);
 	std::string currentIpAddress(uint64_t currentMs);
 	int drawLargeChar(Surface& surface, int x, int y, char c, const Color& color);
 	void drawScaledDigit(Surface& surface, int x, int y, int digit,

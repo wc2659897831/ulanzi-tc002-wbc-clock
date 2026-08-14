@@ -25,6 +25,10 @@ static const Color COLOR_GREEN_DARK(20, 130, 55);
 static const Color COLOR_YELLOW(255, 210, 60);
 static const Color COLOR_CYAN(60, 220, 255);
 static const Color COLOR_MAGENTA(255, 80, 210);
+static const Color COLOR_BLUE(55, 120, 255);
+static const Color COLOR_SKY(90, 205, 255);
+static const Color COLOR_ORANGE(255, 145, 35);
+static const Color COLOR_PURPLE(160, 95, 255);
 
 #define DISPLAY_WIDTH 52
 #define DISPLAY_HEIGHT 16
@@ -32,6 +36,7 @@ static const Color COLOR_MAGENTA(255, 80, 210);
 #define POMODORO_REST_SECONDS (5 * 60)
 #define IP_SCROLL_SPEED_MS 70
 #define IP_QUERY_INTERVAL_MS 2000
+#define WEATHER_PAGE_INTERVAL_MS 3500
 #define LARGE_DIGIT_SCALE 2
 #define LARGE_DIGIT_WIDTH (3 * LARGE_DIGIT_SCALE)
 #define LARGE_DIGIT_HEIGHT (5 * LARGE_DIGIT_SCALE)
@@ -228,6 +233,47 @@ static int micColumnTarget(int column, int frame, const int* bandLevels) {
 	return clampInt(target, 1, DISPLAY_HEIGHT);
 }
 
+enum WeatherKind {
+	WEATHER_CLEAR,
+	WEATHER_CLOUD,
+	WEATHER_FOG,
+	WEATHER_RAIN,
+	WEATHER_SNOW,
+	WEATHER_THUNDER
+};
+
+static WeatherKind weatherKindForCode(int code) {
+	if (code == 95 || code == 96 || code == 99) {
+		return WEATHER_THUNDER;
+	}
+	if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+		return WEATHER_RAIN;
+	}
+	if ((code >= 71 && code <= 77) || code == 85 || code == 86) {
+		return WEATHER_SNOW;
+	}
+	if (code == 45 || code == 48) {
+		return WEATHER_FOG;
+	}
+	if (code >= 1 && code <= 3) {
+		return WEATHER_CLOUD;
+	}
+	return WEATHER_CLEAR;
+}
+
+static Color aqiColor(int aqi) {
+	if (aqi <= 50) {
+		return COLOR_GREEN;
+	}
+	if (aqi <= 100) {
+		return COLOR_YELLOW;
+	}
+	if (aqi <= 150) {
+		return COLOR_ORANGE;
+	}
+	return COLOR_RED;
+}
+
 } // namespace
 
 FunctionsPage::FunctionsPage()
@@ -248,7 +294,9 @@ FunctionsPage::FunctionsPage()
 	  mMicAutoReportEnabled(false),
 	  mIpScrollStartMs(0),
 	  mCachedIp("192.168.1.13"),
-	  mLastIpQueryMs(0) {
+	  mLastIpQueryMs(0),
+	  mWeatherFrame(0),
+	  mWeatherPageStartMs(0) {
 	for (int i = 0; i < MIC_BAR_COUNT; ++i) {
 		mMicColumnLevels[i] = 1;
 		mMicPeakLevels[i] = 1;
@@ -264,7 +312,11 @@ FunctionsPage::~FunctionsPage() {
 void FunctionsPage::onEnter() {
 	LOGD_TRACE("FunctionsPage: onEnter");
 	mPomodoroLastTickMs = nowMs();
+	if (mCurrentFunction == FUNC_WEATHER) {
+		mWeatherPageStartMs = mPomodoroLastTickMs;
+	}
 	updateMicReportState();
+	updateWeatherState(false);
 	MenuIndicator::getInstance().show(FUNC_COUNT, mCurrentFunction);
 	draw();
 }
@@ -277,6 +329,7 @@ void FunctionsPage::onExit() {
 		McuManager::getInstance().setAutoMicReport(false);
 		mMicAutoReportEnabled = false;
 	}
+	mWeatherService.stop();
 }
 
 bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
@@ -309,6 +362,16 @@ bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 		}
 	}
 
+	if (keyCode == E_KEYCODE_MIDDLE_BUTTON &&
+			mCurrentFunction == FUNC_WEATHER) {
+		if (keyStatus == 1) {
+			updateWeatherState(true);
+			draw();
+			return false;
+		}
+		return false;
+	}
+
 	if (keyStatus != 1) {
 		return true;
 	}
@@ -328,6 +391,7 @@ bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 bool FunctionsPage::needsFastRefresh() const {
 	return mCurrentFunction == FUNC_IP ||
 		mCurrentFunction == FUNC_MIC_LIGHT ||
+		mCurrentFunction == FUNC_WEATHER ||
 		(mCurrentFunction == FUNC_POMODORO &&
 			(mPomodoroRunning || mMiddlePressStartMs > 0));
 }
@@ -344,6 +408,8 @@ void FunctionsPage::draw() {
 		drawIpAddress(surface, currentMs);
 	} else if (mCurrentFunction == FUNC_MIC_LIGHT) {
 		drawMicLight(surface);
+	} else if (mCurrentFunction == FUNC_WEATHER) {
+		drawWeather(surface, currentMs);
 	} else {
 		drawPomodoro(surface);
 	}
@@ -371,6 +437,10 @@ void FunctionsPage::switchFunction(int delta) {
 	}
 	if (mCurrentFunction == FUNC_IP) {
 		mIpScrollStartMs = nowMs();
+	}
+	if (mCurrentFunction == FUNC_WEATHER) {
+		mWeatherPageStartMs = nowMs();
+		updateWeatherState(false);
 	}
 	updateMicReportState();
 	MenuIndicator::getInstance().show(FUNC_COUNT, mCurrentFunction);
@@ -677,6 +747,286 @@ void FunctionsPage::updateMicReportState() {
 			mMicBandLevels[i] = 1;
 		}
 	}
+}
+
+void FunctionsPage::updateWeatherState(bool force) {
+	if (mCurrentFunction != FUNC_WEATHER) {
+		return;
+	}
+	mWeatherService.requestRefresh(force);
+}
+
+void FunctionsPage::drawWeather(Surface& surface, uint64_t currentMs) {
+	updateWeatherState(false);
+	const WeatherService::Snapshot weather = mWeatherService.snapshot();
+	mWeatherFrame++;
+
+	if (!weather.hasWeather) {
+		drawWeatherStatus(surface, weather, currentMs);
+		return;
+	}
+
+	const int page = static_cast<int>(
+		((currentMs - mWeatherPageStartMs) / WEATHER_PAGE_INTERVAL_MS) % 4);
+	switch (page) {
+	case 1:
+		drawWeatherAtmosphere(surface, weather);
+		break;
+	case 2:
+		drawWeatherAir(surface, weather);
+		break;
+	case 3:
+		drawWeatherForecast(surface, weather);
+		break;
+	case 0:
+	default:
+		drawWeatherMain(surface, weather);
+		break;
+	}
+}
+
+void FunctionsPage::drawWeatherStatus(Surface& surface,
+		const WeatherService::Snapshot& weather, uint64_t currentMs) {
+	const bool timedOut = weather.refreshing &&
+		mWeatherPageStartMs > 0 &&
+		currentMs > mWeatherPageStartMs + 5000ULL;
+	const bool loading = weather.refreshing && !timedOut;
+	drawWeatherIcon(surface, 2, 0, loading ? 1 : 95, false);
+	const char* top = timedOut ? "TIME" : (loading ? "WEATHER" : "NO DATA");
+	const char* bottom = weather.status.c_str();
+	drawRightText(surface, top, bottom, COLOR_WHITE,
+		loading ? COLOR_CYAN : (timedOut ? COLOR_ORANGE : COLOR_RED));
+}
+
+void FunctionsPage::drawWeatherMain(Surface& surface,
+		const WeatherService::Snapshot& weather) {
+	drawWeatherIcon(surface, 1, 0, weather.weatherCode, false);
+
+	char top[10] = {0};
+	snprintf(top, sizeof(top), "%dC", weather.temperatureC);
+	char bottom[14] = {0};
+	snprintf(bottom, sizeof(bottom), "FL %d", weather.apparentTemperatureC);
+	drawRightText(surface, top, bottom, COLOR_WHITE, COLOR_YELLOW);
+
+	if (weather.refreshing) {
+		Painter::getInstance().drawPixel(
+			surface, 51, (mWeatherFrame / 2) % DISPLAY_HEIGHT, COLOR_CYAN);
+	}
+}
+
+void FunctionsPage::drawWeatherAtmosphere(Surface& surface,
+		const WeatherService::Snapshot& weather) {
+	drawFogIcon(surface, 1, 0, false);
+	char top[14] = {0};
+	snprintf(top, sizeof(top), "HUM %d", weather.humidityPercent);
+	char bottom[14] = {0};
+	if (weather.pressureHPa > 0) {
+		snprintf(bottom, sizeof(bottom), "P %d", weather.pressureHPa);
+	} else {
+		snprintf(bottom, sizeof(bottom), "SPD %d", weather.windSpeedKmh);
+	}
+	drawRightText(surface, top, bottom, COLOR_SKY, COLOR_WHITE);
+
+	const int arrowX = 44;
+	const int arrowY = 4;
+	const int direction = ((weather.windDirectionDeg + 45) / 90) % 4;
+	if (direction == 0) {
+		Painter::getInstance().drawLine(surface, arrowX, arrowY + 5,
+			arrowX, arrowY, COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX - 1, arrowY + 1,
+			COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX + 1, arrowY + 1,
+			COLOR_GREEN);
+	} else if (direction == 1) {
+		Painter::getInstance().drawLine(surface, arrowX - 3, arrowY + 3,
+			arrowX + 3, arrowY + 3, COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX + 2, arrowY + 2,
+			COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX + 2, arrowY + 4,
+			COLOR_GREEN);
+	} else if (direction == 2) {
+		Painter::getInstance().drawLine(surface, arrowX, arrowY,
+			arrowX, arrowY + 5, COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX - 1, arrowY + 4,
+			COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX + 1, arrowY + 4,
+			COLOR_GREEN);
+	} else {
+		Painter::getInstance().drawLine(surface, arrowX + 3, arrowY + 3,
+			arrowX - 3, arrowY + 3, COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX - 2, arrowY + 2,
+			COLOR_GREEN);
+		Painter::getInstance().drawPixel(surface, arrowX - 2, arrowY + 4,
+			COLOR_GREEN);
+	}
+	char wind[8] = {0};
+	snprintf(wind, sizeof(wind), "%dK", weather.windSpeedKmh);
+	Painter::getInstance().drawText(surface, 41, 14, wind, COLOR_GREEN, 0);
+}
+
+void FunctionsPage::drawWeatherAir(Surface& surface,
+		const WeatherService::Snapshot& weather) {
+	drawCloudIcon(surface, 1, 0, false);
+	if (!weather.hasAir) {
+		drawRightText(surface, "AIR", "WAIT", COLOR_WHITE, COLOR_CYAN);
+		return;
+	}
+
+	char top[14] = {0};
+	snprintf(top, sizeof(top), "AQI %d", weather.aqi);
+	char bottom[14] = {0};
+	snprintf(bottom, sizeof(bottom), "PM %d", weather.pm25);
+	drawRightText(surface, top, bottom, aqiColor(weather.aqi), COLOR_WHITE);
+
+	const int barHeight = clampInt(weather.aqi, 0, 200) * 12 / 200;
+	Painter::getInstance().drawRect(surface, 49, 3, 2, 12, COLOR_DIM, false);
+	if (barHeight > 0) {
+		Painter::getInstance().drawRect(surface, 49, 15 - barHeight, 2,
+			barHeight, aqiColor(weather.aqi), true);
+	}
+}
+
+void FunctionsPage::drawWeatherForecast(Surface& surface,
+		const WeatherService::Snapshot& weather) {
+	drawWeatherIcon(surface, 1, 0, weather.weatherCode, false);
+	char top[14] = {0};
+	snprintf(top, sizeof(top), "H%dL%d", weather.tempMaxC, weather.tempMinC);
+	char bottom[14] = {0};
+	snprintf(bottom, sizeof(bottom), "RAIN %d", weather.precipitationPercent);
+	drawRightText(surface, top, bottom, COLOR_ORANGE, COLOR_SKY);
+
+	const int uvDots = clampInt(weather.uvIndex, 0, 10);
+	for (int i = 0; i < uvDots && i < 10; ++i) {
+		Painter::getInstance().drawPixel(surface, 22 + i * 2, 1,
+			i < 5 ? COLOR_YELLOW : COLOR_RED);
+	}
+}
+
+void FunctionsPage::drawWeatherIcon(Surface& surface, int x, int y, int code,
+		bool isSmall) {
+	switch (weatherKindForCode(code)) {
+	case WEATHER_CLEAR:
+		drawSunIcon(surface, x, y, isSmall);
+		break;
+	case WEATHER_CLOUD:
+		drawSunIcon(surface, x, y, true);
+		drawCloudIcon(surface, x, y + 1, isSmall);
+		break;
+	case WEATHER_FOG:
+		drawFogIcon(surface, x, y, isSmall);
+		break;
+	case WEATHER_RAIN:
+		drawRainIcon(surface, x, y, isSmall);
+		break;
+	case WEATHER_SNOW:
+		drawSnowIcon(surface, x, y, isSmall);
+		break;
+	case WEATHER_THUNDER:
+	default:
+		drawThunderIcon(surface, x, y, isSmall);
+		break;
+	}
+}
+
+void FunctionsPage::drawSunIcon(Surface& surface, int x, int y, bool small) {
+	const int cx = x + (small ? 5 : 8);
+	const int cy = y + (small ? 5 : 8);
+	const int radius = small ? 3 : 5;
+	Painter::getInstance().drawCircle(surface, cx, cy, radius,
+		COLOR_ORANGE, true);
+	Painter::getInstance().drawCircle(surface, cx - 1, cy - 1,
+		std::max(1, radius - 2), COLOR_YELLOW, true);
+
+	static const int8_t rays[][4] = {
+		{0, -7, 0, -5}, {5, -5, 4, -4}, {7, 0, 5, 0}, {5, 5, 4, 4},
+		{0, 7, 0, 5}, {-5, 5, -4, 4}, {-7, 0, -5, 0}, {-5, -5, -4, -4}
+	};
+	for (int i = 0; i < 4; ++i) {
+		const int ray = (i * 2 + mWeatherFrame / 3) % 8;
+		Painter::getInstance().drawLine(surface,
+			cx + rays[ray][0], cy + rays[ray][1],
+			cx + rays[ray][2], cy + rays[ray][3], COLOR_YELLOW);
+	}
+	if ((mWeatherFrame % 6) < 3) {
+		drawWeatherSparkle(surface, x + 14, y + 2, COLOR_WHITE);
+	}
+}
+
+void FunctionsPage::drawCloudIcon(Surface& surface, int x, int y, bool small) {
+	const int drift = (mWeatherFrame / 5) % 3;
+	const int ox = x + drift - 1;
+	const int baseY = y + (small ? 7 : 9);
+	Painter::getInstance().drawCircle(surface, ox + 5, baseY, 3, COLOR_DIM, true);
+	Painter::getInstance().drawCircle(surface, ox + 9, baseY - 2, 4,
+		COLOR_WHITE, true);
+	Painter::getInstance().drawCircle(surface, ox + 13, baseY, 3,
+		COLOR_SKY, true);
+	Painter::getInstance().drawRect(surface, ox + 4, baseY, 12, 4,
+		COLOR_WHITE, true);
+	Painter::getInstance().drawLine(surface, ox + 5, baseY + 4,
+		ox + 15, baseY + 4, COLOR_SKY);
+}
+
+void FunctionsPage::drawRainIcon(Surface& surface, int x, int y, bool small) {
+	drawCloudIcon(surface, x, y, small);
+	for (int i = 0; i < 5; ++i) {
+		const int dropX = x + 4 + i * 3;
+		const int dropY = y + 10 + ((mWeatherFrame + i * 3) % 6);
+		Painter::getInstance().drawPixel(surface, dropX, dropY,
+			i % 2 == 0 ? COLOR_CYAN : COLOR_SKY);
+		Painter::getInstance().drawPixel(surface, dropX - 1, dropY + 1,
+			COLOR_BLUE);
+	}
+}
+
+void FunctionsPage::drawThunderIcon(Surface& surface, int x, int y, bool small) {
+	drawCloudIcon(surface, x, y, small);
+	const Color boltColor = (mWeatherFrame % 8) < 4 ? COLOR_YELLOW : COLOR_WHITE;
+	Painter::getInstance().drawLine(surface, x + 10, y + 8,
+		x + 7, y + 13, boltColor);
+	Painter::getInstance().drawLine(surface, x + 7, y + 13,
+		x + 11, y + 12, boltColor);
+	Painter::getInstance().drawLine(surface, x + 11, y + 12,
+		x + 8, y + 16, boltColor);
+	if ((mWeatherFrame % 10) < 3) {
+		drawWeatherSparkle(surface, x + 16, y + 2, COLOR_PURPLE);
+	}
+}
+
+void FunctionsPage::drawSnowIcon(Surface& surface, int x, int y, bool small) {
+	drawCloudIcon(surface, x, y, small);
+	for (int i = 0; i < 4; ++i) {
+		const int sx = x + 5 + i * 4;
+		const int sy = y + 10 + ((mWeatherFrame / 2 + i * 4) % 6);
+		drawWeatherSparkle(surface, sx, sy, i % 2 ? COLOR_WHITE : COLOR_CYAN);
+	}
+}
+
+void FunctionsPage::drawFogIcon(Surface& surface, int x, int y, bool small) {
+	(void) small;
+	drawCloudIcon(surface, x, y - 1, true);
+	for (int row = 0; row < 3; ++row) {
+		const int shift = (mWeatherFrame / 4 + row * 3) % 6;
+		const int fy = y + 10 + row * 2;
+		Painter::getInstance().drawLine(surface, x + shift, fy,
+			x + 10 + shift, fy, row == 1 ? COLOR_WHITE : COLOR_SKY);
+	}
+}
+
+void FunctionsPage::drawWeatherSparkle(Surface& surface, int x, int y,
+		const Color& color) {
+	Painter::getInstance().drawPixel(surface, x, y, color);
+	Painter::getInstance().drawPixel(surface, x - 1, y, color);
+	Painter::getInstance().drawPixel(surface, x + 1, y, color);
+	Painter::getInstance().drawPixel(surface, x, y - 1, color);
+	Painter::getInstance().drawPixel(surface, x, y + 1, color);
+}
+
+void FunctionsPage::drawRightText(Surface& surface, const char* top,
+		const char* bottom, const Color& topColor, const Color& bottomColor) {
+	const int textX = 20;
+	Painter::getInstance().drawText(surface, textX, 7, top, topColor, 0);
+	Painter::getInstance().drawText(surface, textX, 14, bottom, bottomColor, 0);
 }
 
 std::string FunctionsPage::currentIpAddress(uint64_t currentMs) {
