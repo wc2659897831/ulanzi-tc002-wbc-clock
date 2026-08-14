@@ -148,7 +148,13 @@ void MenuPage::drawCountdown(Surface& surface) {
 	}
 
 	char text[2] = { static_cast<char>('0' + mClockCountdown), '\0' };
-	Painter::getInstance().drawText(surface, 47, 10, text, color, 0);
+	const int clockTextX = 21;
+	const int clockRightX = clockTextX +
+		Painter::getInstance().getTextWidth("CLOCK", 0) - 1;
+	const int digitWidth = Painter::getInstance().getTextWidth(text, 0);
+	const int centerX = (clockRightX + DISPLAY_WIDTH - 1) / 2;
+	const int x = centerX - digitWidth / 2;
+	Painter::getInstance().drawText(surface, x, 11, text, color, 0);
 }
 
 void MenuPage::drawFunctionsIcon(Surface& surface) {

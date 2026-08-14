@@ -23,6 +23,7 @@ private:
 		FUNC_POMODORO = 0,
 		FUNC_BATTERY,
 		FUNC_IP,
+		FUNC_MIC_LIGHT,
 		FUNC_COUNT
 	};
 
@@ -35,6 +36,12 @@ private:
 	bool mMiddleLongResetDone;
 	int mChargeFrame;
 	int mTomatoFrame;
+	int mMicPercent;
+	int mMicFrame;
+	int mMicPaletteIndex;
+	int mMicColumnLevels[52];
+	bool mMicHasTriggered;
+	bool mMicAutoReportEnabled;
 	uint64_t mIpScrollStartMs;
 	std::string mCachedIp;
 	uint64_t mLastIpQueryMs;
@@ -51,6 +58,10 @@ private:
 	void drawBattery(Surface& surface);
 	void drawBatteryIcon(Surface& surface, int x, int y, int percent, bool charging);
 	void drawIpAddress(Surface& surface, uint64_t currentMs);
+	void drawMicLight(Surface& surface);
+	void drawMicLightText(Surface& surface);
+	void drawGradientText(Surface& surface, const char* text, int y, bool dim);
+	void updateMicReportState();
 	std::string currentIpAddress(uint64_t currentMs);
 	int drawLargeChar(Surface& surface, int x, int y, char c, const Color& color);
 	void drawScaledDigit(Surface& surface, int x, int y, int digit,

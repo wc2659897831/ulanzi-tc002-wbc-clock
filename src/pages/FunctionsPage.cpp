@@ -1,6 +1,7 @@
 #include "pages/FunctionsPage.h"
 
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <sys/time.h>
 
@@ -23,6 +24,7 @@ static const Color COLOR_GREEN(60, 255, 120);
 static const Color COLOR_GREEN_DARK(20, 130, 55);
 static const Color COLOR_YELLOW(255, 210, 60);
 static const Color COLOR_CYAN(60, 220, 255);
+static const Color COLOR_MAGENTA(255, 80, 210);
 
 #define DISPLAY_WIDTH 52
 #define DISPLAY_HEIGHT 16
@@ -35,6 +37,9 @@ static const Color COLOR_CYAN(60, 220, 255);
 #define LARGE_DIGIT_HEIGHT (5 * LARGE_DIGIT_SCALE)
 #define LARGE_CHAR_GAP 2
 #define DOT_WIDTH 1
+#define MIC_BAR_COUNT DISPLAY_WIDTH
+#define MIC_IDLE_PERCENT 3
+#define MIC_PALETTE_COUNT 5
 
 static const char* DIGITS[] = {
 	"111"
@@ -99,6 +104,70 @@ static int clampInt(int value, int minValue, int maxValue) {
 	return value;
 }
 
+static Color blendColor(const Color& from, const Color& to, int value,
+		int maxValue) {
+	if (maxValue <= 0) {
+		return to;
+	}
+	value = clampInt(value, 0, maxValue);
+	return Color(
+		static_cast<Color::byte>(from.r + (to.r - from.r) * value / maxValue),
+		static_cast<Color::byte>(from.g + (to.g - from.g) * value / maxValue),
+		static_cast<Color::byte>(from.b + (to.b - from.b) * value / maxValue));
+}
+
+static Color scaleColor(const Color& color, int percent) {
+	percent = clampInt(percent, 0, 100);
+	return Color(
+		static_cast<Color::byte>(color.r * percent / 100),
+		static_cast<Color::byte>(color.g * percent / 100),
+		static_cast<Color::byte>(color.b * percent / 100));
+}
+
+struct MicPalette {
+	Color bottom;
+	Color lower;
+	Color upper;
+	Color top;
+};
+
+static const MicPalette& micPalette(int paletteIndex) {
+	static const MicPalette PALETTES[MIC_PALETTE_COUNT] = {
+		{ Color(60, 255, 120), Color(60, 220, 255), Color(255, 210, 60), Color(255, 80, 210) },
+		{ Color(0, 190, 255), Color(80, 255, 150), Color(255, 230, 40), Color(255, 70, 80) },
+		{ Color(80, 255, 80), Color(80, 180, 255), Color(190, 90, 255), Color(255, 80, 150) },
+		{ Color(255, 95, 70), Color(255, 220, 50), Color(80, 255, 170), Color(40, 190, 255) },
+		{ Color(80, 210, 255), Color(120, 255, 100), Color(255, 160, 50), Color(255, 60, 200) }
+	};
+	return PALETTES[clampInt(paletteIndex, 0, MIC_PALETTE_COUNT - 1)];
+}
+
+static Color micGradientColor(int rowFromBottom, int paletteIndex) {
+	const MicPalette& palette = micPalette(paletteIndex);
+	const int pos = clampInt(rowFromBottom * 100 / (DISPLAY_HEIGHT - 1), 0, 100);
+	if (pos < 38) {
+		return blendColor(palette.bottom, palette.lower, pos, 38);
+	}
+	if (pos < 72) {
+		return blendColor(palette.lower, palette.upper, pos - 38, 34);
+	}
+	return blendColor(palette.upper, palette.top, pos - 72, 28);
+}
+
+static int micColumnTarget(int column, int frame, int activeRows) {
+	if (activeRows <= 0) {
+		return 1;
+	}
+
+	const int waveA = (frame * 3 + column * 5) % 17;
+	const int waveB = (frame + column * 11) % 13;
+	const int response = 62 + ((column * 29 + frame * 7) % 55);
+	int target = 1 + activeRows * response / 100;
+	target += (waveA - 8) * activeRows / 42;
+	target += (waveB - 6) * activeRows / 58;
+	return clampInt(target, 1, DISPLAY_HEIGHT);
+}
+
 } // namespace
 
 FunctionsPage::FunctionsPage()
@@ -112,9 +181,17 @@ FunctionsPage::FunctionsPage()
 	  mMiddleLongResetDone(false),
 	  mChargeFrame(0),
 	  mTomatoFrame(0),
+	  mMicPercent(0),
+	  mMicFrame(0),
+	  mMicPaletteIndex(0),
+	  mMicHasTriggered(false),
+	  mMicAutoReportEnabled(false),
 	  mIpScrollStartMs(0),
 	  mCachedIp("192.168.1.13"),
 	  mLastIpQueryMs(0) {
+	for (int i = 0; i < MIC_BAR_COUNT; ++i) {
+		mMicColumnLevels[i] = 1;
+	}
 }
 
 FunctionsPage::~FunctionsPage() {
@@ -123,6 +200,7 @@ FunctionsPage::~FunctionsPage() {
 void FunctionsPage::onEnter() {
 	LOGD_TRACE("FunctionsPage: onEnter");
 	mPomodoroLastTickMs = nowMs();
+	updateMicReportState();
 	MenuIndicator::getInstance().show(FUNC_COUNT, mCurrentFunction);
 	draw();
 }
@@ -131,6 +209,10 @@ void FunctionsPage::onExit() {
 	LOGD_TRACE("FunctionsPage: onExit");
 	mMiddlePressStartMs = 0;
 	mMiddleLongResetDone = false;
+	if (mMicAutoReportEnabled) {
+		McuManager::getInstance().setAutoMicReport(false);
+		mMicAutoReportEnabled = false;
+	}
 }
 
 bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
@@ -181,6 +263,7 @@ bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 
 bool FunctionsPage::needsFastRefresh() const {
 	return mCurrentFunction == FUNC_IP ||
+		mCurrentFunction == FUNC_MIC_LIGHT ||
 		(mCurrentFunction == FUNC_POMODORO &&
 			(mPomodoroRunning || mMiddlePressStartMs > 0));
 }
@@ -195,6 +278,8 @@ void FunctionsPage::draw() {
 		drawBattery(surface);
 	} else if (mCurrentFunction == FUNC_IP) {
 		drawIpAddress(surface, currentMs);
+	} else if (mCurrentFunction == FUNC_MIC_LIGHT) {
+		drawMicLight(surface);
 	} else {
 		drawPomodoro(surface);
 	}
@@ -223,6 +308,7 @@ void FunctionsPage::switchFunction(int delta) {
 	if (mCurrentFunction == FUNC_IP) {
 		mIpScrollStartMs = nowMs();
 	}
+	updateMicReportState();
 	MenuIndicator::getInstance().show(FUNC_COUNT, mCurrentFunction);
 	draw();
 }
@@ -386,6 +472,79 @@ void FunctionsPage::drawIpAddress(Surface& surface, uint64_t currentMs) {
 		if (i < ip.size() - 1) {
 			x += LARGE_CHAR_GAP;
 		}
+	}
+}
+
+void FunctionsPage::drawMicLight(Surface& surface) {
+	int raw = McuManager::getInstance().queryMicValue();
+	if (raw >= 0) {
+		mMicPercent = clampInt(raw * 100 / 65535, 0, 100);
+	}
+	if (mMicPercent <= MIC_IDLE_PERCENT) {
+		mMicPercent = 0;
+	} else {
+		mMicFrame++;
+	}
+
+	const int activeRows = mMicPercent * (DISPLAY_HEIGHT - 1) / 100;
+	static const int weights[MIC_BAR_COUNT] = {
+		72, 86, 102, 116, 96, 126, 110, 122, 100, 114, 92, 84, 74
+	};
+
+	for (int i = 0; i < MIC_BAR_COUNT; ++i) {
+		const int x = i * (MIC_BAR_WIDTH + MIC_BAR_GAP);
+		int height = 1;
+		if (activeRows > 0) {
+			const int motion = ((mMicFrame + i * 3) % 5) - 2;
+			height += activeRows * (weights[i] + motion * 4) / 100;
+			height = clampInt(height, 1, DISPLAY_HEIGHT);
+		}
+
+		for (int y = DISPLAY_HEIGHT - height; y < DISPLAY_HEIGHT; ++y) {
+			const int rowFromBottom = DISPLAY_HEIGHT - 1 - y;
+			Painter::getInstance().drawRect(
+				surface, x, y, MIC_BAR_WIDTH, 1,
+				micGradientColor(rowFromBottom), true);
+		}
+	}
+
+	if (mMicPercent == 0) {
+		drawMicLightText(surface);
+	}
+}
+
+void FunctionsPage::drawMicLightText(Surface& surface) {
+	drawGradientText(surface, "MIC", 7);
+	drawGradientText(surface, "LIGHT", 13);
+}
+
+void FunctionsPage::drawGradientText(Surface& surface, const char* text, int y) {
+	const int len = static_cast<int>(strlen(text));
+	if (len <= 0) {
+		return;
+	}
+
+	const int width = Painter::getInstance().getTextWidth(text, 0);
+	int x = (DISPLAY_WIDTH - width) / 2;
+	for (int i = 0; i < len; ++i) {
+		const int row = len == 1 ? 0 : i * (DISPLAY_HEIGHT - 1) / (len - 1);
+		Painter::getInstance().drawChar(
+			surface, x, y, text[i], micGradientColor(row));
+		x += Painter::getInstance().getTextWidth(std::string(1, text[i]), 0);
+	}
+}
+
+void FunctionsPage::updateMicReportState() {
+	const bool shouldEnable = mCurrentFunction == FUNC_MIC_LIGHT;
+	if (shouldEnable == mMicAutoReportEnabled) {
+		return;
+	}
+
+	McuManager::getInstance().setAutoMicReport(shouldEnable);
+	mMicAutoReportEnabled = shouldEnable;
+	if (shouldEnable) {
+		mMicPercent = 0;
+		mMicFrame = 0;
 	}
 }
 
