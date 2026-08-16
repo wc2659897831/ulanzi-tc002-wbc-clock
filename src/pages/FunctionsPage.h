@@ -2,6 +2,7 @@
 #define PAGES_FUNCTIONSPAGE_H_
 
 #include "pages/PageBase.h"
+#include "assets/PetAnimationFrames.h"
 #include "services/WeatherService.h"
 #include "utils/Painter.h"
 #include "utils/Surface.h"
@@ -22,11 +23,37 @@ public:
 private:
 	enum FunctionItem {
 		FUNC_POMODORO = 0,
+		FUNC_PET,
+		FUNC_AMBIENCE,
+		FUNC_METRONOME,
 		FUNC_BATTERY,
 		FUNC_IP,
 		FUNC_MIC_LIGHT,
 		FUNC_WEATHER,
 		FUNC_COUNT
+	};
+
+	enum AmbienceScene {
+		AMBIENCE_FIRE = 0,
+		AMBIENCE_RAIN,
+		AMBIENCE_SNOW,
+		AMBIENCE_STAR,
+		AMBIENCE_WAVE,
+		AMBIENCE_AURORA,
+		AMBIENCE_BREATH,
+		AMBIENCE_HEART,
+		AMBIENCE_EQUALIZER,
+		AMBIENCE_COUNT
+	};
+
+	enum PetAction {
+		PET_AUTO = 0,
+		PET_IDLE,
+		PET_WALK,
+		PET_HAPPY,
+		PET_EAT,
+		PET_SLEEP,
+		PET_COUNT
 	};
 
 	int mCurrentFunction;
@@ -36,6 +63,26 @@ private:
 	uint64_t mPomodoroLastTickMs;
 	uint64_t mMiddlePressStartMs;
 	bool mMiddleLongResetDone;
+	int mPetSpeciesIndex;
+	int mPetAction;
+	const PetAnimationAssets::Animation* mPetAnimation;
+	int mPetFrameIndex;
+	uint64_t mPetLastFrameMs;
+	uint64_t mPetMiddlePressStartMs;
+	bool mPetMiddleLongSpeciesDone;
+	uint64_t mPetLeftPressStartMs;
+	bool mPetLeftPressed;
+	uint64_t mPetRightPressStartMs;
+	bool mPetRightPressed;
+	int mPetLabelFrame;
+	int mAmbienceScene;
+	int mAmbienceFrame;
+	bool mAmbienceSceneSelectMode;
+	bool mMetronomeRunning;
+	int mMetronomeBpm;
+	int mMetronomeFrame;
+	uint64_t mMetronomeLastBeatMs;
+	uint64_t mMetronomeBeatFlashMs;
 	int mChargeFrame;
 	int mTomatoFrame;
 	int mMicPercent;
@@ -60,8 +107,31 @@ private:
 	void advancePomodoroPhase();
 	void updatePomodoro(uint64_t currentMs);
 	void updateMiddleLongPress(uint64_t currentMs);
+	void updateMetronome(uint64_t currentMs);
 	void drawPomodoro(Surface& surface);
 	void drawTomatoIcon(Surface& surface, int x, int y);
+	void switchPetSpecies(int delta);
+	void selectPetAction(int action);
+	const PetAnimationAssets::PetAnimationSet& currentPetSet() const;
+	const PetAnimationAssets::Animation* petAnimationForAction(int action) const;
+	void updatePetAnimation(uint64_t currentMs);
+	void drawPet(Surface& surface);
+	void drawPetFrame(Surface& surface, const PetAnimationAssets::Frame& frame);
+	void drawPetLabel(Surface& surface);
+	void switchAmbienceScene(int delta);
+	void drawAmbience(Surface& surface);
+	void drawFireAmbience(Surface& surface);
+	void drawRainAmbience(Surface& surface);
+	void drawSnowAmbience(Surface& surface);
+	void drawStarAmbience(Surface& surface);
+	void drawWaveAmbience(Surface& surface);
+	void drawAuroraAmbience(Surface& surface);
+	void drawBreathAmbience(Surface& surface);
+	void drawHeartAmbience(Surface& surface);
+	void drawEqualizerAmbience(Surface& surface);
+	void drawAmbienceSceneName(Surface& surface);
+	void drawMetronome(Surface& surface, uint64_t currentMs);
+	void drawMetronomeNeedle(Surface& surface, int phase, const Color& color);
 	void drawBattery(Surface& surface);
 	void drawBatteryIcon(Surface& surface, int x, int y, int percent, bool charging);
 	void drawIpAddress(Surface& surface, uint64_t currentMs);
@@ -104,6 +174,7 @@ private:
 	int largeCharWidth(char c) const;
 	int largeTextWidth(const std::string& text) const;
 	void drawHeader(Surface& surface, const char* text);
+	void drawCenteredText(Surface& surface, const char* text, int y, const Color& color);
 	void drawTwoDigitNumber(Surface& surface, int x, int y, int value, const Color& color);
 	void drawDigit(Surface& surface, int x, int y, int digit, const Color& color);
 };

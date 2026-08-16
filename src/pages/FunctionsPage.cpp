@@ -34,6 +34,7 @@ static const Color COLOR_PURPLE(160, 95, 255);
 #define DISPLAY_HEIGHT 16
 #define POMODORO_SECONDS (25 * 60)
 #define POMODORO_REST_SECONDS (5 * 60)
+#define POMODORO_RESET_LONG_PRESS_MS 1500ULL
 #define IP_SCROLL_SPEED_MS 70
 #define IP_QUERY_INTERVAL_MS 2000
 #define WEATHER_PAGE_INTERVAL_MS 3500
@@ -47,6 +48,12 @@ static const Color COLOR_PURPLE(160, 95, 255);
 #define MIC_IDLE_PERCENT 0
 #define MIC_PALETTE_COUNT 5
 #define MIC_BAND_COUNT 5
+#define PET_ACTION_COUNT 6
+#define PET_SPECIES_COUNT 3
+#define PET_AUTO_DURATION_SCALE 2
+#define PET_LEFT_LONG_PRESS_MS 800ULL
+#define PET_RIGHT_LONG_PRESS_MS 800ULL
+#define PET_MIDDLE_LONG_PRESS_MS 900ULL
 
 static const char* DIGITS[] = {
 	"111"
@@ -129,6 +136,17 @@ static Color scaleColor(const Color& color, int percent) {
 		static_cast<Color::byte>(color.r * percent / 100),
 		static_cast<Color::byte>(color.g * percent / 100),
 		static_cast<Color::byte>(color.b * percent / 100));
+}
+
+static int noiseAt(int seed, int maxValue) {
+	if (maxValue <= 0) {
+		return 0;
+	}
+	unsigned int value = static_cast<unsigned int>(seed) * 1103515245U + 12345U;
+	value ^= value >> 16;
+	value *= 2246822519U;
+	value ^= value >> 13;
+	return static_cast<int>(value % static_cast<unsigned int>(maxValue));
 }
 
 struct MicPalette {
@@ -285,6 +303,26 @@ FunctionsPage::FunctionsPage()
 	  mPomodoroLastTickMs(0),
 	  mMiddlePressStartMs(0),
 	  mMiddleLongResetDone(false),
+	  mPetSpeciesIndex(0),
+	  mPetAction(PET_AUTO),
+	  mPetAnimation(petAnimationForAction(PET_AUTO)),
+	  mPetFrameIndex(0),
+	  mPetLastFrameMs(0),
+	  mPetMiddlePressStartMs(0),
+	  mPetMiddleLongSpeciesDone(false),
+	  mPetLeftPressStartMs(0),
+	  mPetLeftPressed(false),
+	  mPetRightPressStartMs(0),
+	  mPetRightPressed(false),
+	  mPetLabelFrame(0),
+	  mAmbienceScene(AMBIENCE_FIRE),
+	  mAmbienceFrame(0),
+	  mAmbienceSceneSelectMode(false),
+	  mMetronomeRunning(false),
+	  mMetronomeBpm(90),
+	  mMetronomeFrame(0),
+	  mMetronomeLastBeatMs(0),
+	  mMetronomeBeatFlashMs(0),
 	  mChargeFrame(0),
 	  mTomatoFrame(0),
 	  mMicPercent(0),
@@ -312,6 +350,7 @@ FunctionsPage::~FunctionsPage() {
 void FunctionsPage::onEnter() {
 	LOGD_TRACE("FunctionsPage: onEnter");
 	mPomodoroLastTickMs = nowMs();
+	mMetronomeLastBeatMs = mPomodoroLastTickMs;
 	if (mCurrentFunction == FUNC_WEATHER) {
 		mWeatherPageStartMs = mPomodoroLastTickMs;
 	}
@@ -325,6 +364,13 @@ void FunctionsPage::onExit() {
 	LOGD_TRACE("FunctionsPage: onExit");
 	mMiddlePressStartMs = 0;
 	mMiddleLongResetDone = false;
+	mPetMiddlePressStartMs = 0;
+	mPetMiddleLongSpeciesDone = false;
+	mPetLeftPressStartMs = 0;
+	mPetLeftPressed = false;
+	mPetRightPressStartMs = 0;
+	mPetRightPressed = false;
+	mAmbienceSceneSelectMode = false;
 	if (mMicAutoReportEnabled) {
 		McuManager::getInstance().setAutoMicReport(false);
 		mMicAutoReportEnabled = false;
@@ -335,6 +381,18 @@ void FunctionsPage::onExit() {
 bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 	if ((keyCode == E_KEYCODE_CLOCKWISE || keyCode == E_KEYCODE_ANTI_CLOCKWISE) &&
 			keyStatus == 0) {
+		if (mCurrentFunction == FUNC_AMBIENCE && mAmbienceSceneSelectMode) {
+			switchAmbienceScene(keyCode == E_KEYCODE_CLOCKWISE ? 1 : -1);
+			return false;
+		}
+		if (mCurrentFunction == FUNC_METRONOME) {
+			const int delta = keyCode == E_KEYCODE_CLOCKWISE ? 5 : -5;
+			mMetronomeBpm = clampInt(mMetronomeBpm + delta, 40, 220);
+			mMetronomeLastBeatMs = nowMs();
+			mMetronomeBeatFlashMs = mMetronomeLastBeatMs;
+			draw();
+			return false;
+		}
 		switchFunction(keyCode == E_KEYCODE_CLOCKWISE ? 1 : -1);
 		return false;
 	}
@@ -349,7 +407,7 @@ bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 		}
 		if (keyStatus == 0 && mMiddlePressStartMs > 0) {
 			if (!mMiddleLongResetDone &&
-					currentMs - mMiddlePressStartMs >= 3000ULL) {
+					currentMs - mMiddlePressStartMs >= POMODORO_RESET_LONG_PRESS_MS) {
 				resetPomodoro();
 				mMiddleLongResetDone = true;
 			}
@@ -372,6 +430,81 @@ bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 		return false;
 	}
 
+	if (mCurrentFunction == FUNC_PET) {
+		const uint64_t currentMs = nowMs();
+		if (keyCode == E_KEYCODE_MIDDLE_BUTTON) {
+			if (keyStatus == 1) {
+				mPetMiddlePressStartMs = currentMs;
+				mPetMiddleLongSpeciesDone = false;
+			} else if (keyStatus == 0 && mPetMiddlePressStartMs > 0) {
+				if (!mPetMiddleLongSpeciesDone &&
+						currentMs - mPetMiddlePressStartMs >= PET_MIDDLE_LONG_PRESS_MS) {
+					switchPetSpecies(1);
+				} else if (!mPetMiddleLongSpeciesDone) {
+					selectPetAction(PET_HAPPY);
+				}
+				mPetMiddlePressStartMs = 0;
+				mPetMiddleLongSpeciesDone = false;
+			}
+			return false;
+		}
+
+		if (keyCode == E_KEYCODE_LEFT_BUTTON) {
+			if (keyStatus == 1) {
+				mPetLeftPressStartMs = currentMs;
+				mPetLeftPressed = true;
+			} else if (keyStatus == 0 && mPetLeftPressed) {
+				const uint64_t heldMs = currentMs - mPetLeftPressStartMs;
+				selectPetAction(heldMs >= PET_LEFT_LONG_PRESS_MS ?
+					PET_AUTO : PET_WALK);
+				mPetLeftPressStartMs = 0;
+				mPetLeftPressed = false;
+			}
+			return false;
+		}
+
+		if (keyCode == E_KEYCODE_RIGHT_BUTTON) {
+			if (keyStatus == 1) {
+				mPetRightPressStartMs = currentMs;
+				mPetRightPressed = true;
+			} else if (keyStatus == 0 && mPetRightPressed) {
+				const uint64_t heldMs = currentMs - mPetRightPressStartMs;
+				selectPetAction(heldMs >= PET_RIGHT_LONG_PRESS_MS ?
+					PET_SLEEP : PET_EAT);
+				mPetRightPressStartMs = 0;
+				mPetRightPressed = false;
+			}
+			return false;
+		}
+
+		if (keyStatus == 1) {
+			if (keyCode == E_KEYCODE_KNOB_BUTTON) {
+				selectPetAction(PET_AUTO);
+				return false;
+			}
+		}
+	}
+
+	if (keyCode == E_KEYCODE_MIDDLE_BUTTON &&
+			mCurrentFunction == FUNC_AMBIENCE) {
+		if (keyStatus == 1) {
+			mAmbienceSceneSelectMode = !mAmbienceSceneSelectMode;
+			draw();
+		}
+		return false;
+	}
+
+	if (keyCode == E_KEYCODE_MIDDLE_BUTTON &&
+			mCurrentFunction == FUNC_METRONOME) {
+		if (keyStatus == 1) {
+			mMetronomeRunning = !mMetronomeRunning;
+			mMetronomeLastBeatMs = nowMs();
+			mMetronomeBeatFlashMs = mMetronomeLastBeatMs;
+			draw();
+		}
+		return false;
+	}
+
 	if (keyStatus != 1) {
 		return true;
 	}
@@ -390,8 +523,12 @@ bool FunctionsPage::onKeyEvent(int keyCode, int keyStatus) {
 
 bool FunctionsPage::needsFastRefresh() const {
 	return mCurrentFunction == FUNC_IP ||
+		mCurrentFunction == FUNC_PET ||
+		mCurrentFunction == FUNC_AMBIENCE ||
+		mCurrentFunction == FUNC_BATTERY ||
 		mCurrentFunction == FUNC_MIC_LIGHT ||
 		mCurrentFunction == FUNC_WEATHER ||
+		(mCurrentFunction == FUNC_METRONOME && mMetronomeRunning) ||
 		(mCurrentFunction == FUNC_POMODORO &&
 			(mPomodoroRunning || mMiddlePressStartMs > 0));
 }
@@ -400,10 +537,18 @@ void FunctionsPage::draw() {
 	uint64_t currentMs = nowMs();
 	updatePomodoro(currentMs);
 	updateMiddleLongPress(currentMs);
+	updateMetronome(currentMs);
+	updatePetAnimation(currentMs);
 	Surface surface(DISPLAY_WIDTH, DISPLAY_HEIGHT, COLOR_BLACK);
 
 	if (mCurrentFunction == FUNC_BATTERY) {
 		drawBattery(surface);
+	} else if (mCurrentFunction == FUNC_PET) {
+		drawPet(surface);
+	} else if (mCurrentFunction == FUNC_AMBIENCE) {
+		drawAmbience(surface);
+	} else if (mCurrentFunction == FUNC_METRONOME) {
+		drawMetronome(surface, currentMs);
 	} else if (mCurrentFunction == FUNC_IP) {
 		drawIpAddress(surface, currentMs);
 	} else if (mCurrentFunction == FUNC_MIC_LIGHT) {
@@ -428,6 +573,13 @@ uint64_t FunctionsPage::nowMs() const {
 }
 
 void FunctionsPage::switchFunction(int delta) {
+	mAmbienceSceneSelectMode = false;
+	mPetMiddlePressStartMs = 0;
+	mPetMiddleLongSpeciesDone = false;
+	mPetLeftPressStartMs = 0;
+	mPetLeftPressed = false;
+	mPetRightPressStartMs = 0;
+	mPetRightPressed = false;
 	mCurrentFunction += delta;
 	while (mCurrentFunction < 0) {
 		mCurrentFunction += FUNC_COUNT;
@@ -441,6 +593,9 @@ void FunctionsPage::switchFunction(int delta) {
 	if (mCurrentFunction == FUNC_WEATHER) {
 		mWeatherPageStartMs = nowMs();
 		updateWeatherState(false);
+	}
+	if (mCurrentFunction == FUNC_BATTERY) {
+		mChargeFrame = 0;
 	}
 	updateMicReportState();
 	MenuIndicator::getInstance().show(FUNC_COUNT, mCurrentFunction);
@@ -495,13 +650,32 @@ void FunctionsPage::updateMiddleLongPress(uint64_t currentMs) {
 			mMiddleLongResetDone) {
 		return;
 	}
-	if (currentMs - mMiddlePressStartMs >= 3000ULL) {
+	if (currentMs - mMiddlePressStartMs >= POMODORO_RESET_LONG_PRESS_MS) {
 		mPomodoroRunning = false;
 		mPomodoroResting = false;
 		mPomodoroRemainingSec = POMODORO_SECONDS;
 		mPomodoroLastTickMs = currentMs;
 		mMiddleLongResetDone = true;
 	}
+}
+
+void FunctionsPage::updateMetronome(uint64_t currentMs) {
+	if (!mMetronomeRunning) {
+		mMetronomeLastBeatMs = currentMs;
+		return;
+	}
+
+	const int intervalMs = 60000 / clampInt(mMetronomeBpm, 40, 220);
+	if (mMetronomeLastBeatMs == 0) {
+		mMetronomeLastBeatMs = currentMs;
+		mMetronomeBeatFlashMs = currentMs;
+		return;
+	}
+	while (currentMs >= mMetronomeLastBeatMs + static_cast<uint64_t>(intervalMs)) {
+		mMetronomeLastBeatMs += static_cast<uint64_t>(intervalMs);
+		mMetronomeBeatFlashMs = mMetronomeLastBeatMs;
+	}
+	mMetronomeFrame++;
 }
 
 void FunctionsPage::drawPomodoro(Surface& surface) {
@@ -517,6 +691,304 @@ void FunctionsPage::drawPomodoro(Surface& surface) {
 	if (mPomodoroRunning) {
 		mTomatoFrame++;
 	}
+
+	const int pulse = mPomodoroRunning ? (mTomatoFrame % 12) : 0;
+	const Color ritualColor = mPomodoroResting ? COLOR_CYAN : COLOR_GREEN;
+	for (int i = 0; i < 9; ++i) {
+		const int x = 18 + i * 3;
+		const int bright = (i + pulse / 2) % 4 == 0 ? 100 : 25;
+		Painter::getInstance().drawPixel(surface, x, 15,
+			scaleColor(ritualColor, bright));
+	}
+}
+
+void FunctionsPage::switchAmbienceScene(int delta) {
+	mAmbienceScene += delta;
+	while (mAmbienceScene < 0) {
+		mAmbienceScene += AMBIENCE_COUNT;
+	}
+	while (mAmbienceScene >= AMBIENCE_COUNT) {
+		mAmbienceScene -= AMBIENCE_COUNT;
+	}
+	mAmbienceFrame = 0;
+	draw();
+}
+
+void FunctionsPage::drawAmbience(Surface& surface) {
+	switch (mAmbienceScene) {
+	case AMBIENCE_RAIN:
+		drawRainAmbience(surface);
+		break;
+	case AMBIENCE_SNOW:
+		drawSnowAmbience(surface);
+		break;
+	case AMBIENCE_STAR:
+		drawStarAmbience(surface);
+		break;
+	case AMBIENCE_WAVE:
+		drawWaveAmbience(surface);
+		break;
+	case AMBIENCE_AURORA:
+		drawAuroraAmbience(surface);
+		break;
+	case AMBIENCE_BREATH:
+		drawBreathAmbience(surface);
+		break;
+	case AMBIENCE_HEART:
+		drawHeartAmbience(surface);
+		break;
+	case AMBIENCE_EQUALIZER:
+		drawEqualizerAmbience(surface);
+		break;
+	case AMBIENCE_FIRE:
+	default:
+		drawFireAmbience(surface);
+		break;
+	}
+
+	if (mAmbienceSceneSelectMode || mAmbienceFrame < 24) {
+		drawAmbienceSceneName(surface);
+	}
+	mAmbienceFrame++;
+}
+
+void FunctionsPage::drawFireAmbience(Surface& surface) {
+	for (int y = 0; y < DISPLAY_HEIGHT; ++y) {
+		for (int x = 0; x < DISPLAY_WIDTH; ++x) {
+			const int heat = DISPLAY_HEIGHT - y;
+			const int flicker = noiseAt(x * 31 + y * 17 + mAmbienceFrame * 9, 9);
+			const int flame = heat * 9 + flicker + ((x + mAmbienceFrame) % 7);
+			if (flame > 52) {
+				Painter::getInstance().drawPixel(surface, x, y, COLOR_YELLOW);
+			} else if (flame > 38) {
+				Painter::getInstance().drawPixel(surface, x, y, COLOR_ORANGE);
+			} else if (flame > 24) {
+				Painter::getInstance().drawPixel(surface, x, y, COLOR_RED);
+			} else if (y > 11) {
+				Painter::getInstance().drawPixel(surface, x, y, COLOR_RED_DEEP);
+			}
+		}
+	}
+}
+
+void FunctionsPage::drawRainAmbience(Surface& surface) {
+	for (int i = 0; i < 38; ++i) {
+		const int x = noiseAt(i * 29, DISPLAY_WIDTH);
+		const int y = (noiseAt(i * 43, DISPLAY_HEIGHT) + mAmbienceFrame + i * 3) %
+			DISPLAY_HEIGHT;
+		const Color color = i % 3 == 0 ? COLOR_WHITE : (i % 2 ? COLOR_CYAN : COLOR_BLUE);
+		Painter::getInstance().drawPixel(surface, x, y, color);
+		Painter::getInstance().drawPixel(surface, x - 1, y - 1, scaleColor(color, 45));
+	}
+	for (int x = 0; x < DISPLAY_WIDTH; ++x) {
+		const int wave = 14 + ((x + mAmbienceFrame / 2) % 4 == 0 ? 1 : 0);
+		Painter::getInstance().drawPixel(surface, x, wave, scaleColor(COLOR_BLUE, 35));
+	}
+}
+
+void FunctionsPage::drawSnowAmbience(Surface& surface) {
+	for (int i = 0; i < 24; ++i) {
+		const int drift = (mAmbienceFrame / 5 + i * 3) % 7 - 3;
+		const int x = (noiseAt(i * 37, DISPLAY_WIDTH) + drift + DISPLAY_WIDTH) %
+			DISPLAY_WIDTH;
+		const int y = (noiseAt(i * 53, DISPLAY_HEIGHT) + mAmbienceFrame / 2 + i) %
+			DISPLAY_HEIGHT;
+		const Color color = i % 3 == 0 ? COLOR_CYAN : COLOR_WHITE;
+		Painter::getInstance().drawPixel(surface, x, y, color);
+		if (i % 5 == 0) {
+			Painter::getInstance().drawPixel(surface, x + 1, y, scaleColor(color, 55));
+			Painter::getInstance().drawPixel(surface, x, y + 1, scaleColor(color, 55));
+		}
+	}
+}
+
+void FunctionsPage::drawStarAmbience(Surface& surface) {
+	for (int i = 0; i < 32; ++i) {
+		const int x = noiseAt(i * 61, DISPLAY_WIDTH);
+		const int y = noiseAt(i * 47, DISPLAY_HEIGHT);
+		const int twinkle = noiseAt(i * 13 + mAmbienceFrame / 3, 100);
+		Color color = twinkle > 78 ? COLOR_WHITE :
+			(twinkle > 55 ? COLOR_YELLOW : scaleColor(COLOR_BLUE, 22));
+		Painter::getInstance().drawPixel(surface, x, y, color);
+		if (twinkle > 90) {
+			Painter::getInstance().drawPixel(surface, x - 1, y, scaleColor(color, 50));
+			Painter::getInstance().drawPixel(surface, x + 1, y, scaleColor(color, 50));
+		}
+	}
+}
+
+void FunctionsPage::drawWaveAmbience(Surface& surface) {
+	for (int x = 0; x < DISPLAY_WIDTH; ++x) {
+		const int waveA = ((x * 3 + mAmbienceFrame * 2) % 18) - 9;
+		const int waveB = ((x * 7 + mAmbienceFrame * 5) % 22) - 11;
+		const int crest = clampInt(9 + waveA / 3 + waveB / 6, 4, 12);
+		const int foam = noiseAt(x * 41 + mAmbienceFrame * 11, 100);
+
+		for (int y = crest; y < DISPLAY_HEIGHT; ++y) {
+			const int depth = y - crest;
+			Color color = depth == 0 ? COLOR_CYAN :
+				(depth < 3 ? COLOR_BLUE : scaleColor(COLOR_BLUE, 42));
+			if (depth > 5) {
+				color = scaleColor(COLOR_BLUE, 28);
+			}
+			if ((foam + depth * 13) % 31 < 6 && depth <= 2) {
+				color = COLOR_WHITE;
+			}
+			Painter::getInstance().drawPixel(surface, x, y, color);
+		}
+
+		if ((x + mAmbienceFrame) % 5 == 0) {
+			Painter::getInstance().drawPixel(surface, x, crest - 1, COLOR_WHITE);
+		}
+		if (((x * 3 + mAmbienceFrame) % 11) == 0) {
+			Painter::getInstance().drawPixel(surface, x, crest, COLOR_WHITE);
+		}
+		if (((x + mAmbienceFrame / 2) % 7) < 2) {
+			Painter::getInstance().drawPixel(surface, x, crest + 1, COLOR_CYAN);
+		}
+	}
+
+	for (int x = 0; x < DISPLAY_WIDTH; ++x) {
+		const int rippleY = 6 + ((x * 4 + mAmbienceFrame * 3) % 16) / 4 -
+			((x * 9 + mAmbienceFrame * 2) % 10) / 5;
+		if (rippleY >= 4 && rippleY < DISPLAY_HEIGHT) {
+			Painter::getInstance().drawPixel(surface, x, rippleY,
+				scaleColor(COLOR_CYAN, 55));
+		}
+	}
+}
+
+void FunctionsPage::drawAuroraAmbience(Surface& surface) {
+	for (int x = 0; x < DISPLAY_WIDTH; ++x) {
+		const int ribbon = 3 + ((x * 3 + mAmbienceFrame) % 17) / 3;
+		Color color = blendColor(COLOR_GREEN, COLOR_MAGENTA,
+			(x * 100 / DISPLAY_WIDTH + mAmbienceFrame * 3) % 100, 100);
+		for (int y = 0; y < DISPLAY_HEIGHT; ++y) {
+			const int distance = y > ribbon ? y - ribbon : ribbon - y;
+			if (distance < 5) {
+				Painter::getInstance().drawPixel(surface, x, y,
+					scaleColor(color, 85 - distance * 16));
+			}
+		}
+	}
+}
+
+void FunctionsPage::drawBreathAmbience(Surface& surface) {
+	for (int stream = 0; stream < 18; ++stream) {
+		const int x = (stream * 3 + noiseAt(stream * 97, 3)) % DISPLAY_WIDTH;
+		const int speed = 1 + noiseAt(stream * 53, 3);
+		const int tailLength = 4 + noiseAt(stream * 71, 6);
+		const int period = DISPLAY_HEIGHT + tailLength + 5;
+		const int headY = (mAmbienceFrame / speed +
+			noiseAt(stream * 131, period)) % period;
+
+		for (int tail = 0; tail < tailLength; ++tail) {
+			const int y = headY - tail;
+			if (y < 0 || y >= DISPLAY_HEIGHT) {
+				continue;
+			}
+
+			Color rainColor = tail == 0 ? Color(185, 255, 205) :
+				(tail == 1 ? COLOR_GREEN : scaleColor(COLOR_GREEN, 90 - tail * 9));
+			if (tail > 2 && ((stream + tail + mAmbienceFrame) % 5) == 0) {
+				rainColor = scaleColor(rainColor, 45);
+			}
+
+			Painter::getInstance().drawPixel(surface, x, y, rainColor);
+			if (tail > 0 && ((stream * 7 + tail + mAmbienceFrame / 2) % 6) == 0) {
+				Painter::getInstance().drawPixel(surface, x + 1, y,
+					scaleColor(rainColor, 45));
+			}
+		}
+	}
+}
+
+void FunctionsPage::drawHeartAmbience(Surface& surface) {
+	static const int8_t points[][2] = {
+		{-4,-2},{-3,-3},{-2,-3},{-1,-2},{0,-1},{1,-2},{2,-3},{3,-3},{4,-2},
+		{-5,-1},{-5,0},{-4,1},{-3,2},{-2,3},{-1,4},{0,5},{1,4},{2,3},
+		{3,2},{4,1},{5,0},{5,-1}
+	};
+	const int phase = mAmbienceFrame % 36;
+	const int beat = phase < 5 || (phase >= 11 && phase < 15) ? 2 : 0;
+	const Color color = phase < 15 ? COLOR_RED : scaleColor(COLOR_RED, 55);
+	for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); ++i) {
+		const int x = 26 + points[i][0] * (beat + 3) / 3;
+		const int y = 7 + points[i][1] * (beat + 3) / 3;
+		Painter::getInstance().drawPixel(surface, x, y, color);
+	}
+	Painter::getInstance().drawLine(surface, 0, 8, 10, 8, scaleColor(COLOR_RED, 55));
+	Painter::getInstance().drawLine(surface, 42, 8, 51, 8, scaleColor(COLOR_RED, 55));
+}
+
+void FunctionsPage::drawEqualizerAmbience(Surface& surface) {
+	for (int x = 0; x < DISPLAY_WIDTH; ++x) {
+		const int band = micBandForColumn(x);
+		const int waveA = noiseAt(band * 41 + mAmbienceFrame * (band + 3), 9);
+		const int waveB = noiseAt(x * 17 + mAmbienceFrame * 5, 7);
+		const int sweep = (mAmbienceFrame + x * (band + 1)) % 24;
+		int height = 2 + waveA + waveB / 2;
+		if (sweep < 7) {
+			height += 5 - sweep / 2;
+		}
+		height = clampInt(height, 1, DISPLAY_HEIGHT);
+
+		for (int y = DISPLAY_HEIGHT - height; y < DISPLAY_HEIGHT; ++y) {
+			const int rowFromBottom = DISPLAY_HEIGHT - 1 - y;
+			const Color color = micGradientColor(
+				rowFromBottom, (mAmbienceFrame / 36) % MIC_PALETTE_COUNT);
+			Painter::getInstance().drawPixel(surface, x, y, color);
+		}
+
+		const int peak = clampInt(DISPLAY_HEIGHT - height - 1 +
+			noiseAt(x * 19 + mAmbienceFrame / 2, 3), 0, DISPLAY_HEIGHT - 1);
+		if ((x + mAmbienceFrame) % 3 != 0) {
+			Painter::getInstance().drawPixel(surface, x, peak, COLOR_WHITE);
+		}
+	}
+}
+
+void FunctionsPage::drawAmbienceSceneName(Surface& surface) {
+	static const char* NAMES[AMBIENCE_COUNT] = {
+		"FIRE", "RAIN", "SNOW", "STAR", "WATER", "AUR", "BREAT", "HEART", "EQUAL"
+	};
+	Painter::getInstance().drawRect(surface, 10, 4, 32, 8,
+		mAmbienceSceneSelectMode ? Color(8, 16, 22) : COLOR_BLACK, true);
+	drawCenteredText(surface, NAMES[mAmbienceScene], 10,
+		mAmbienceSceneSelectMode ? COLOR_YELLOW : COLOR_WHITE);
+}
+
+void FunctionsPage::drawMetronome(Surface& surface, uint64_t currentMs) {
+	const int intervalMs = 60000 / clampInt(mMetronomeBpm, 40, 220);
+	const int elapsed = mMetronomeRunning ?
+		static_cast<int>((currentMs - mMetronomeLastBeatMs) % intervalMs) : 0;
+	const int phase = mMetronomeRunning ? elapsed * 100 / intervalMs : 50;
+	const bool flash = currentMs - mMetronomeBeatFlashMs < 110ULL;
+	const Color beatColor = flash ? COLOR_YELLOW : COLOR_GREEN;
+
+	Painter::getInstance().drawLine(surface, 5, 14, 23, 14, COLOR_DIM);
+	Painter::getInstance().drawLine(surface, 14, 14, 14, 3, COLOR_DIM);
+	drawMetronomeNeedle(surface, phase, beatColor);
+	Painter::getInstance().drawCircle(surface, 14, 14, 2, COLOR_WHITE, true);
+
+	char bpm[4] = {0};
+	snprintf(bpm, sizeof(bpm), "%d", clampInt(mMetronomeBpm, 40, 220));
+	Painter::getInstance().drawText(surface, 28, 8, bpm, COLOR_WHITE, 0);
+	Painter::getInstance().drawText(surface, 28, 14,
+		mMetronomeRunning ? "RUN" : "BPM", mMetronomeRunning ? COLOR_GREEN : COLOR_CYAN, 0);
+	if (flash) {
+		Painter::getInstance().drawRect(surface, 48, 1, 3, 14, COLOR_YELLOW, true);
+	}
+}
+
+void FunctionsPage::drawMetronomeNeedle(Surface& surface, int phase,
+		const Color& color) {
+	const int offset = phase < 50 ? -8 + phase * 16 / 50 :
+		8 - (phase - 50) * 16 / 50;
+	const int tipX = 14 + offset;
+	const int tipY = 3 + (offset < 0 ? -offset : offset) / 5;
+	Painter::getInstance().drawLine(surface, 14, 14, tipX, tipY, color);
+	Painter::getInstance().drawPixel(surface, tipX, tipY, COLOR_WHITE);
 }
 
 void FunctionsPage::drawTomatoIcon(Surface& surface, int x, int y) {
@@ -557,6 +1029,123 @@ void FunctionsPage::drawTomatoIcon(Surface& surface, int x, int y) {
 			y + shine[(frame + 7) % 8][1],
 			COLOR_YELLOW);
 	}
+}
+
+void FunctionsPage::switchPetSpecies(int delta) {
+	mPetSpeciesIndex += delta;
+	while (mPetSpeciesIndex < 0) {
+		mPetSpeciesIndex += PET_SPECIES_COUNT;
+	}
+	while (mPetSpeciesIndex >= PET_SPECIES_COUNT) {
+		mPetSpeciesIndex -= PET_SPECIES_COUNT;
+	}
+	mPetAnimation = petAnimationForAction(mPetAction);
+	mPetFrameIndex = 0;
+	mPetLastFrameMs = nowMs();
+	mPetLabelFrame = 0;
+	draw();
+}
+
+void FunctionsPage::selectPetAction(int action) {
+	mPetAction = clampInt(action, PET_AUTO, PET_COUNT - 1);
+	mPetAnimation = petAnimationForAction(mPetAction);
+	mPetFrameIndex = 0;
+	mPetLastFrameMs = nowMs();
+	mPetLabelFrame = 0;
+	draw();
+}
+
+const PetAnimationAssets::PetAnimationSet& FunctionsPage::currentPetSet() const {
+	switch (mPetSpeciesIndex) {
+	case 1:
+		return PetAnimationAssets::DOG_SET;
+	case 2:
+		return PetAnimationAssets::RABBIT_SET;
+	case 0:
+	default:
+		return PetAnimationAssets::CAT_SET;
+	}
+}
+
+const PetAnimationAssets::Animation* FunctionsPage::petAnimationForAction(
+		int action) const {
+	const PetAnimationAssets::PetAnimationSet& petSet = currentPetSet();
+	int index = clampInt(action, PET_AUTO, PET_COUNT - 1);
+	if (index >= PET_ACTION_COUNT || index >= petSet.animationCount) {
+		index = PET_AUTO;
+	}
+	return petSet.animations[index];
+}
+
+void FunctionsPage::updatePetAnimation(uint64_t currentMs) {
+	if (mCurrentFunction != FUNC_PET) {
+		return;
+	}
+
+	if (mPetMiddlePressStartMs > 0 &&
+			!mPetMiddleLongSpeciesDone &&
+			currentMs - mPetMiddlePressStartMs >= PET_MIDDLE_LONG_PRESS_MS) {
+		mPetMiddleLongSpeciesDone = true;
+		switchPetSpecies(1);
+	}
+
+	if (mPetAnimation == nullptr || mPetAnimation->frameCount == 0) {
+		return;
+	}
+	if (mPetFrameIndex < 0 || mPetFrameIndex >= mPetAnimation->frameCount) {
+		mPetFrameIndex = 0;
+	}
+
+	if (mPetLastFrameMs == 0) {
+		mPetLastFrameMs = currentMs;
+		return;
+	}
+	for (int guard = 0; guard < 12; ++guard) {
+		const PetAnimationAssets::Frame& frame =
+			mPetAnimation->frames[mPetFrameIndex];
+		const uint64_t durationMs = frame.durationMs > 0 ? frame.durationMs : 200;
+		const uint64_t frameDurationMs = mPetAction == PET_AUTO ?
+			durationMs * PET_AUTO_DURATION_SCALE : durationMs;
+		if (currentMs < mPetLastFrameMs + frameDurationMs) {
+			break;
+		}
+		mPetLastFrameMs += frameDurationMs;
+		mPetFrameIndex = (mPetFrameIndex + 1) % mPetAnimation->frameCount;
+	}
+	if (mPetLabelFrame < 40) {
+		mPetLabelFrame++;
+	}
+}
+
+void FunctionsPage::drawPet(Surface& surface) {
+	if (mPetAnimation != nullptr && mPetAnimation->frameCount > 0) {
+		const int frameIndex = clampInt(mPetFrameIndex, 0,
+			mPetAnimation->frameCount - 1);
+		drawPetFrame(surface, mPetAnimation->frames[frameIndex]);
+	}
+	if (mPetLabelFrame < 18) {
+		drawPetLabel(surface);
+	}
+}
+
+void FunctionsPage::drawPetFrame(Surface& surface,
+		const PetAnimationAssets::Frame& frame) {
+	for (uint16_t i = 0; i < frame.pixelCount; ++i) {
+		const PetAnimationAssets::Pixel& pixel = frame.pixels[i];
+		surface.setPixel(pixel.x, pixel.y, Color(pixel.r, pixel.g, pixel.b));
+	}
+}
+
+void FunctionsPage::drawPetLabel(Surface& surface) {
+	static const char* ACTIONS[PET_COUNT] = {
+		"AUTO", "IDLE", "WALK", "HAPPY", "EAT", "SLEEP"
+	};
+	const char* petName = currentPetSet().name;
+	const char* actionName = ACTIONS[clampInt(mPetAction, PET_AUTO, PET_COUNT - 1)];
+	Painter::getInstance().drawRect(surface, 0, 0, 25, 8, COLOR_BLACK, true);
+	Painter::getInstance().drawText(surface, 1, 6, petName, COLOR_YELLOW, 0);
+	Painter::getInstance().drawRect(surface, 28, 8, 24, 8, COLOR_BLACK, true);
+	Painter::getInstance().drawText(surface, 29, 14, actionName, COLOR_WHITE, 0);
 }
 
 void FunctionsPage::drawBattery(Surface& surface) {
@@ -1186,6 +1775,13 @@ void FunctionsPage::drawScaledDigit(Surface& surface, int x, int y,
 
 void FunctionsPage::drawHeader(Surface& surface, const char* text) {
 	Painter::getInstance().drawText(surface, 0, 4, text, COLOR_DIM, 0);
+}
+
+void FunctionsPage::drawCenteredText(Surface& surface, const char* text, int y,
+		const Color& color) {
+	const int width = Painter::getInstance().getTextWidth(text, 0);
+	const int x = (DISPLAY_WIDTH - width) / 2;
+	Painter::getInstance().drawText(surface, x, y, text, color, 0);
 }
 
 void FunctionsPage::drawTwoDigitNumber(Surface& surface, int x, int y, int value, const Color& color) {

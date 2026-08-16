@@ -11,6 +11,7 @@ static const Color COLOR_GREEN(0, 255, 120);
 static const Color COLOR_YELLOW(255, 210, 60);
 static const Color COLOR_RED(255, 60, 50);
 static const Color COLOR_MAGENTA(255, 80, 210);
+static const Color COLOR_BLUE(50, 120, 255);
 static const Color COLOR_DIM(40, 40, 40);
 
 #define DISPLAY_WIDTH 52
@@ -75,6 +76,9 @@ void MenuPage::draw() {
 	case TOP_FUNCTIONS:
 		drawFunctionsMenu(surface);
 		break;
+	case TOP_MQTT:
+		drawMqttMenu(surface);
+		break;
 	case TOP_STREAM:
 		drawStreamMenu(surface);
 		break;
@@ -114,6 +118,12 @@ void MenuPage::drawFunctionsMenu(Surface& surface) {
 	drawFunctionsIcon(surface);
 	drawCenteredText(surface, "FUNC", 8, COLOR_WHITE);
 	drawCenteredText(surface, "PAGE", 14, COLOR_YELLOW);
+}
+
+void MenuPage::drawMqttMenu(Surface& surface) {
+	drawMqttIcon(surface);
+	drawCenteredText(surface, "MQTT", 8, COLOR_WHITE);
+	drawCenteredText(surface, "CODEX", 14, COLOR_CYAN);
 }
 
 void MenuPage::drawStreamMenu(Surface& surface) {
@@ -162,6 +172,17 @@ void MenuPage::drawFunctionsIcon(Surface& surface) {
 	Painter::getInstance().drawRect(surface, 6, 5, 3, 3, COLOR_RED, true);
 	Painter::getInstance().drawRect(surface, 10, 5, 3, 3, COLOR_GREEN, true);
 	Painter::getInstance().drawLine(surface, 7, 11, 12, 11, COLOR_YELLOW);
+}
+
+void MenuPage::drawMqttIcon(Surface& surface) {
+	Painter::getInstance().drawCircle(surface, 9, 8, 2, COLOR_CYAN, true);
+	Painter::getInstance().drawCircle(surface, 9, 8, 5, COLOR_DIM, false);
+	Painter::getInstance().drawPixel(surface, 2, 8, COLOR_CYAN);
+	Painter::getInstance().drawPixel(surface, 16, 8, COLOR_CYAN);
+	Painter::getInstance().drawLine(surface, 4, 5, 6, 6, COLOR_BLUE);
+	Painter::getInstance().drawLine(surface, 4, 11, 6, 10, COLOR_BLUE);
+	Painter::getInstance().drawLine(surface, 14, 6, 16, 5, COLOR_BLUE);
+	Painter::getInstance().drawLine(surface, 14, 10, 16, 11, COLOR_BLUE);
 }
 
 void MenuPage::drawStreamIcon(Surface& surface) {

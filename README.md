@@ -85,6 +85,54 @@ BluetoothService::instance().start(params);
 
 若 `ble` 字段为空，设备名将自动使用 WiFi MAC 地址后四位生成（如 `Ulanzi TC002 AB12`）。示例参见 `pages/WifiTestPage.h`。
 
+### MQTT Codex 状态页
+
+主菜单新增 `MQTT` 一级菜单，进入后显示 `CodexStatusPage`。该页面订阅一个 MQTT topic，只接收结构化状态，不接收整屏像素图。支持的状态值与 `apps/mqtt/vibe-coding-signal-light` 保持一致：
+
+| 状态值 | 显示效果 |
+|---|---|
+| `off` | 全黑熄灭 |
+| `idle` | 绿灯 |
+| `working` | 红、黄、绿循环 |
+| `attention` | 黄灯闪烁 |
+| `blocked` | 红灯闪烁 |
+
+`/mnt/usb1/test.cfg` 可增加 MQTT 配置：
+
+```json
+{
+  "ssid": "your_wifi_ssid",
+  "pwd": "your_wifi_password",
+  "isConnect": true,
+  "ble": "Ulanzi TC002 Codex",
+  "mqtt": {
+    "enabled": true,
+    "host": "192.168.1.10",
+    "port": 1883,
+    "topic": "tc002/codex/status",
+    "clientId": "tc002-codex"
+  }
+}
+```
+
+消息 payload 可以是纯文本：
+
+```text
+attention
+```
+
+也可以是 JSON：
+
+```json
+{"status":"attention","message":"Codex is waiting for input"}
+```
+
+没有 Home Assistant 时，可以先在电脑上运行本地发布脚本：
+
+```bash
+python lab/codex_status_publish.py attention --host 192.168.1.10 --topic tc002/codex/status --message "Codex is running"
+```
+
 ### GPIO 接口
 
 `GPIO_06` 和 `GPIO_85` 两个 LED 灯引脚保留供用户自由使用，通过 `utils/GpioHelper.h` 控制：

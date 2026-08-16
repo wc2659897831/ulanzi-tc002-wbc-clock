@@ -17,7 +17,9 @@
 #include "pages/SettingsPage.h"
 #include "pages/WifiTestPage.h"
 #include "pages/TimeTestPage.h"
+#include "pages/CodexStatusPage.h"
 #include "services/OfficialCompatServer.h"
+#include "services/MqttStatusService.h"
 #include "ble/bluetooth_service.h"
 #include "net/NetManager.h"
 #include <thread>
@@ -86,7 +88,9 @@ static void showChildIndicator() {
 	} else if (gTopPageIndex == MenuPage::TOP_CLOCK) {
 		MenuIndicator::getInstance().show(2, 0);
 	} else if (gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
-		MenuIndicator::getInstance().show(5, 0);
+		MenuIndicator::getInstance().show(8, 0);
+	} else if (gTopPageIndex == MenuPage::TOP_MQTT) {
+		MenuIndicator::getInstance().show(1, 0);
 	} else {
 		MenuIndicator::getInstance().hide();
 	}
@@ -104,6 +108,8 @@ static void enterChildPage() {
 		PageManager::getInstance().navigateTo("TimeTestPage");
 	} else if (gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
 		PageManager::getInstance().navigateTo("FunctionsPage");
+	} else if (gTopPageIndex == MenuPage::TOP_MQTT) {
+		PageManager::getInstance().navigateTo("CodexStatusPage");
 	} else if (gTopPageIndex == MenuPage::TOP_SETTINGS) {
 		PageManager::getInstance().navigateTo("SettingsPage");
 	} else {
@@ -157,7 +163,8 @@ static void updateClockTopCountdown() {
 static void handleChildScroll(int delta) {
 	if (gTopPageIndex == MenuPage::TOP_SETTINGS ||
 			gTopPageIndex == MenuPage::TOP_CLOCK ||
-			gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
+			gTopPageIndex == MenuPage::TOP_FUNCTIONS ||
+			gTopPageIndex == MenuPage::TOP_MQTT) {
 		PageManager::getInstance().onKeyEvent(
 			delta > 0 ? E_KEYCODE_CLOCKWISE : E_KEYCODE_ANTI_CLOCKWISE, 0);
 		return;
@@ -210,6 +217,8 @@ void loadConfigAndStart() {
 	}
 	std::string ssid, pwd, bleName;
 	bool needConnect = false;
+	MqttStatusService::Config mqttConfig =
+		MqttStatusService::defaultConfig();
 
 	if (base::exists(CONFIG_PATH)) {
 		try {
@@ -218,6 +227,32 @@ void loadConfigAndStart() {
 			pwd = config.getString("pwd", "");
 			needConnect = config.getBool("isConnect", false);
 			bleName = config.getString("ble", "");
+			try {
+				base::JSONObject mqtt = config.getObject("mqtt");
+				mqttConfig.host = mqtt.getString("host", "");
+				mqttConfig.port = mqtt.getInt("port", mqttConfig.port);
+				mqttConfig.topic = mqtt.getString("topic", mqttConfig.topic);
+				mqttConfig.clientId = mqtt.getString("clientId",
+					mqttConfig.clientId);
+				mqttConfig.username = mqtt.getString("username", "");
+				mqttConfig.password = mqtt.getString("password", "");
+				mqttConfig.enabled = mqtt.getBool("enabled",
+					!mqttConfig.host.empty());
+			} catch (...) {
+				mqttConfig.host = "";
+			}
+			if (mqttConfig.host.empty()) {
+				mqttConfig.host = config.getString("mqttHost", "");
+				mqttConfig.port = config.getInt("mqttPort", mqttConfig.port);
+				mqttConfig.topic = config.getString("mqttTopic",
+					mqttConfig.topic);
+				mqttConfig.clientId = config.getString("mqttClientId",
+					mqttConfig.clientId);
+				mqttConfig.username = config.getString("mqttUsername", "");
+				mqttConfig.password = config.getString("mqttPassword", "");
+				mqttConfig.enabled = config.getBool("mqttEnabled",
+					!mqttConfig.host.empty());
+			}
 			LOGI_TRACE("mainLogic: config ssid=%s connect=%d ble=%s",
 				ssid.c_str(), needConnect, bleName.c_str());
 		} catch (...) {
@@ -242,6 +277,13 @@ void loadConfigAndStart() {
 	if (page) {
 		page->setWifiParams(ssid, pwd, needConnect);
 	}
+	if (needConnect && !ssid.empty() && WIFIMANAGER != nullptr &&
+			!WIFIMANAGER->isConnected()) {
+		LOGI_TRACE("mainLogic: connecting WiFi for background services");
+		WIFIMANAGER->connect(ssid, pwd);
+	}
+	MqttStatusService::getInstance().configure(mqttConfig);
+	MqttStatusService::getInstance().start();
 }
 
 }
@@ -270,6 +312,7 @@ static void onUI_init(){
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new AudioTestPage()));
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new WifiTestPage()));
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new TimeTestPage()));
+	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new CodexStatusPage()));
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new FunctionsPage()));
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new SettingsPage()));
 	PageManager::getInstance().registerPage(std::unique_ptr<PageBase>(new MenuPage()));
@@ -309,6 +352,7 @@ static void onUI_hide() {
  */
 static void onUI_quit() {
 	KeyManager::getInstance().removeKeyEventCallback(keyEventCb);
+	MqttStatusService::getInstance().stop();
 	OfficialCompatServer::getInstance().stop();
 }
 
@@ -343,6 +387,13 @@ static bool onUI_Timer(int id){
 					gTopPageIndex == MenuPage::TOP_FUNCTIONS) {
 				auto* page = static_cast<FunctionsPage*>(
 					PageManager::getInstance().getPage("FunctionsPage"));
+				if (page && page->needsFastRefresh()) {
+					PageManager::getInstance().drawCurrentPage();
+				}
+			} else if (gMenuDepth == MENU_DEPTH_CHILD &&
+					gTopPageIndex == MenuPage::TOP_MQTT) {
+				auto* page = static_cast<CodexStatusPage*>(
+					PageManager::getInstance().getPage("CodexStatusPage"));
 				if (page && page->needsFastRefresh()) {
 					PageManager::getInstance().drawCurrentPage();
 				}

@@ -1,0 +1,13 @@
+{
+  "ssid": "YOUR_WIFI_SSID",
+  "pwd": "YOUR_WIFI_PASSWORD",
+  "isConnect": true,
+  "ble": "Ulanzi TC002 Codex",
+  "mqtt": {
+    "enabled": true,
+    "host": "192.168.1.10",
+    "port": 1883,
+    "topic": "tc002/codex/status",
+    "clientId": "tc002-codex"
+  }
+}

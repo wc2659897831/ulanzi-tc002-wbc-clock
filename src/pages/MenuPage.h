@@ -10,6 +10,7 @@ public:
 	enum TopPage {
 		TOP_CLOCK = 0,
 		TOP_FUNCTIONS,
+		TOP_MQTT,
 		TOP_STREAM,
 		TOP_SETTINGS,
 		TOP_TEST,
@@ -35,12 +36,14 @@ private:
 	void drawTestMenu(Surface& surface);
 	void drawClockMenu(Surface& surface);
 	void drawFunctionsMenu(Surface& surface);
+	void drawMqttMenu(Surface& surface);
 	void drawStreamMenu(Surface& surface);
 	void drawSettingsMenu(Surface& surface);
 	void drawCenteredText(Surface& surface, const char* text, int y,
 			const Color& color);
 	void drawCountdown(Surface& surface);
 	void drawFunctionsIcon(Surface& surface);
+	void drawMqttIcon(Surface& surface);
 	void drawStreamIcon(Surface& surface);
 	void drawSettingsIcon(Surface& surface);
 };
