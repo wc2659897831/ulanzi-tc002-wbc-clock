@@ -6,7 +6,7 @@ LedBrightnessManager& LedBrightnessManager::getInstance() {
 }
 
 LedBrightnessManager::LedBrightnessManager()
-	: mBrightness(80) {
+	: mBrightness(100) {
 }
 
 LedBrightnessManager::~LedBrightnessManager() {

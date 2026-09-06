@@ -40,6 +40,9 @@ private:
         bool showWeek;
         int weekStart;
         bool lowBatteryAutoSleep;
+        std::string wifiSsid;
+        std::string wifiPassword;
+        bool wifiConnect;
     };
 
     OfficialCompatServer();
@@ -53,6 +56,7 @@ private:
     std::string baseJson() const;
     std::string configJson() const;
     void setConfig(const std::string& body);
+    bool persistConfigLocked() const;
 
     bool readChunkedBody(int clientFd, std::string& body,
             const std::string& initialBody) const;
@@ -74,6 +78,7 @@ private:
     static bool sendAll(int fd, const char* data, size_t size);
     static void sendResponse(int fd, int status, const char* contentType,
             const std::string& body);
+    static void sendRedirect(int fd, const char* location);
     static bool pasteFrame(const DecodedFrame& frame, int x, int y,
             std::vector<unsigned char>& framebuffer);
 

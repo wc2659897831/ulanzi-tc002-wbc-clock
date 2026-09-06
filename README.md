@@ -1,168 +1,88 @@
-# 示例代码说明
+# TC002 系统烧录
 
-本文档介绍了本平台各硬件功能的使用方法及注意事项，建议结合对应的示例页面源码一起阅读。
+请先阅读完整的[系统烧录说明](系统烧录说明.md)，然后按以下流程操作：
 
-## 硬件功能介绍
+1. 在 FlyThings IDE 中编译项目。
+2. 点击“编译”旁边的“生成镜像”按钮。
+3. 确认项目根目录的 `imgs/update.img` 已生成。
+4. 双击根目录的 `flash_tc002_wifi.bat`。
+5. 输入 TC002 的局域网 IP；默认值正确时直接按回车。
+6. 输入 `imgs/update.img` 的完整路径。
+7. 确认设备和镜像无误后输入 `Y`，开始烧录。
 
-### 按键操作
+烧录前请检查 `src/config/DeviceDefaults.h` 中的 `WIFI_SSID`、`WIFI_PASSWORD` 和 `WIFI_CONNECT`。修改默认 Wi‑Fi 配置后，必须重新编译并重新生成镜像。
 
-本芯片提供一个旋钮和三个独立按键，共支持以下输入事件（详见 `managers/KeyManager.h`）：
+## 当前固件功能
 
-| 按键码 | 说明 |
-|---|---|
-| `E_KEYCODE_CLOCKWISE` | 旋钮顺时针旋转 |
-| `E_KEYCODE_ANTI_CLOCKWISE` | 旋钮逆时针旋转 |
-| `E_KEYCODE_KNOB_BUTTON` | 旋钮按下 |
-| `E_KEYCODE_LEFT_BUTTON` | 左键按下 |
-| `E_KEYCODE_MIDDLE_BUTTON` | 中键按下 |
-| `E_KEYCODE_RIGHT_BUTTON` | 右键按下 |
+本项目面向 52×16 LED 点阵的 Ulanzi TC002 时钟，当前固件包含以下功能：
 
-通过 `KeyManager::getInstance().addKeyEventCallback(cb)` 注册回调即可接收按键事件。示例参见 `pages/BtnTestPage.h`。
+- 时钟、日期和星期显示，并支持启动时同步系统时间。
+- 番茄钟、宠物动画、氛围灯、节拍器。
+- 电池电量、设备 IP 地址、麦克风灯效和天气显示。
+- MQTT Codex 状态灯，支持 `off`、`idle`、`working`、`attention`、`blocked`。
+- 局域网 HTTP 图片/GIF 推送服务。
+- 设备设置，可调整音量和屏幕亮度。
+- Wi‑Fi、BLE、按键、RGB 和音频/MIC 硬件测试。
+- 局域网网页设置，可修改亮度、音量和 Wi‑Fi 参数。
 
-### LED 显示
+## 菜单数量
 
-LED 灯板分辨率为 **52×16** 像素，通过 SPI 总线驱动。调用 `PageBase::sendLedData(rgbData)` 发送一帧 RGB 数据（按行顺序排列，每像素 3 字节）即可刷新显示。该接口已内部处理 SPI 初始化和 `GPIO_35` 的同步控制，直接调用即可。示例参见 `pages/RgbTestPage.h`。
+按设备旋钮菜单的实际代码统计：
 
-### Audio 播放
+- 一级菜单：**6 个**。
+- 一级菜单下直接可切换的二级项目：**17 个**。
+- 二级项目组成：时钟 2 个、功能 8 个、MQTT 1 个、设置 2 个、测试 4 个。
+- “图片推送”是 HTTP 服务模式，不增加旋钮二级菜单项目。
 
-通过 `AudioManager`（`managers/AudioManager.h`）可控制音频的播放、暂停、停止及音量：
+宠物动作、氛围灯场景和 MQTT 状态属于页面内部选项，不另计为二级菜单。
 
-```cpp
-#include "managers/AudioManager.h"
-auto& audio = awtrix::AudioManager::getInstance();
-audio.setVolume(3);          // 音量 0~6，0 为静音
-audio.playAudio("/path/to/file.mp3");
-audio.pauseAudio();
-audio.resumeAudio();
-audio.stopAudio();
-```
-
-示例参见 `pages/AudioTestPage.h`。
-
-### MIC 音量检测
-
-MIC 音量数据由 MCU 上报，通过 `McuManager` 读取（`managers/McuManager.h`）：
-
-```cpp
-#include "managers/McuManager.h"
-McuManager::getInstance().setAutoMicReport(true);  // 开启自动上报
-int micValue = McuManager::getInstance().queryMicValue();
-```
-
-`AudioTestPage` 中展示了实时显示 MIC 音量百分比的完整实现，示例参见 `pages/AudioTestPage.h`。
-
-### WIFI + BLE
-
-WiFi 和 BLE 功能已集成，两者存在依赖关系：**BLE 必须在 WiFi 已开启的前提下才能正常使用**。
-
-**WiFi 启动：**
-```cpp
-#include <base/wifi.h>
-base::wifiOnAndWait(10);  // 等待 WiFi 就绪，超时 10 秒
-```
-
-**BLE 启动：**
-```cpp
-#include "ble/bluetooth_service.h"
-BluetoothParams params;
-params.name = "MyDevice";
-params.on_message = [](const std::string& msg) {
-    // 处理收到的 BLE 消息
-};
-BluetoothService::instance().start(params);
-```
-
-支持通过配置文件 `/mnt/usb1/test.cfg`（JSON 格式）预设 WiFi 和 BLE 参数，字段说明如下：
-
-```json
-{
-  "ssid":      "your_wifi_ssid",
-  "pwd":       "your_wifi_password",
-  "isConnect": true,
-  "ble":       "MyDeviceName"
-}
-```
-
-若 `ble` 字段为空，设备名将自动使用 WiFi MAC 地址后四位生成（如 `Ulanzi TC002 AB12`）。示例参见 `pages/WifiTestPage.h`。
-
-### MQTT Codex 状态页
-
-主菜单新增 `MQTT` 一级菜单，进入后显示 `CodexStatusPage`。该页面订阅一个 MQTT topic，只接收结构化状态，不接收整屏像素图。支持的状态值与 `apps/mqtt/vibe-coding-signal-light` 保持一致：
-
-| 状态值 | 显示效果 |
-|---|---|
-| `off` | 全黑熄灭 |
-| `idle` | 绿灯 |
-| `working` | 红、黄、绿循环 |
-| `attention` | 黄灯闪烁 |
-| `blocked` | 红灯闪烁 |
-
-`/mnt/usb1/test.cfg` 可增加 MQTT 配置：
-
-```json
-{
-  "ssid": "your_wifi_ssid",
-  "pwd": "your_wifi_password",
-  "isConnect": true,
-  "ble": "Ulanzi TC002 Codex",
-  "mqtt": {
-    "enabled": true,
-    "host": "192.168.1.10",
-    "port": 1883,
-    "topic": "tc002/codex/status",
-    "clientId": "tc002-codex"
-  }
-}
-```
-
-消息 payload 可以是纯文本：
+## 菜单树
 
 ```text
-attention
+TC002
+└── 一级菜单（6）
+    ├── 时钟 CLOCK
+    │   ├── 时间显示
+    │   └── 日期/星期显示
+    │
+    ├── 功能 FUNC（8）
+    │   ├── 番茄钟 Pomodoro
+    │   ├── 宠物 Pet
+    │   ├── 氛围灯 Ambience
+    │   ├── 节拍器 Metronome
+    │   ├── 电池 Battery
+    │   ├── IP 地址 IP
+    │   ├── 麦克风灯 Mic Light
+    │   └── 天气 Weather
+    │
+    ├── MQTT CODEX（1）
+    │   └── Codex 状态灯
+    │       ├── off
+    │       ├── idle
+    │       ├── working
+    │       ├── attention
+    │       └── blocked
+    │
+    ├── 图片推送 PUSH IMG
+    │   └── HTTP 图片/GIF 推送服务（无旋钮二级页）
+    │
+    ├── 设置 SETTINGS（2）
+    │   ├── 音量
+    │   └── 屏幕亮度
+    │
+    └── 硬件测试 TEST PAGE（4）
+        ├── 按键测试
+        ├── RGB 灯板测试
+        ├── 音频/MIC 测试
+        └── Wi‑Fi/BLE 测试
 ```
 
-也可以是 JSON：
+## 菜单操作方式
 
-```json
-{"status":"attention","message":"Codex is waiting for input"}
-```
+- 一级菜单中，顺时针/逆时针旋转旋钮切换 6 个一级菜单。
+- 按下旋钮进入当前一级菜单。
+- 在时钟、功能、设置和测试页面中旋转旋钮切换二级项目。
+- 再次按下旋钮返回一级菜单。
+- 番茄钟、宠物、氛围灯和节拍器会使用中键、左右键或长按进行内部控制。
 
-没有 Home Assistant 时，可以先在电脑上运行本地发布脚本：
-
-```bash
-python lab/codex_status_publish.py attention --host 192.168.1.10 --topic tc002/codex/status --message "Codex is running"
-```
-
-### GPIO 接口
-
-`GPIO_06` 和 `GPIO_85` 两个 LED 灯引脚保留供用户自由使用，通过 `utils/GpioHelper.h` 控制：
-
-```cpp
-#include "utils/GpioHelper.h"
-GpioHelper::output("GPIO_06", 1);  // 高电平点亮 LED
-GpioHelper::output("GPIO_06", 0);  // 低电平熄灭 LED
-```
-
-## 注意事项
-
-- 请先阅读相关 IDE 文档和开发指南，了解编译和固件升级流程。
-
-- **防砖检测**：系统启动后必须在入口处设置运行标志，否则系统将触发防砖回滚。
-
-```cpp
-#include <os/SystemProperties.h>
-SystemProperties::setString("sys.zkapp.state", "running");
-```
-
-- **MCU 初始化**：启动时需先初始化 MCU 通信并查询版本号，LED 灯板才能正常工作。
-
-```cpp
-#include "managers/McuManager.h"
-McuManager::getInstance().initialize(new PixelMcuProto::McuParse("/dev/ttyS1", 1500000));
-std::string mcuVer;
-McuManager::getInstance().queryMcuVersion(mcuVer);
-```
-
-- **SPI 帧率限制**：帧间隔不可小于15ms，否则可能导致 LED 显示异常。`sendLedData` 已内置节流机制，建议直接调用。
-- **BLE 依赖 WiFi**：使用 BLE 功能前必须确保 WiFi 已成功开启，否则 BLE 服务将无法正常启动。
-- **主动刷机**：如果想要重刷为官方固件，请按下设备上的重置按钮（位于 USB-C 旁边）并保持按住，会自动刷回官方固件。
+开发说明请查看 [README-dev.md](README-dev.md)。

@@ -31,7 +31,7 @@ SettingsPage::SettingsPage()
 	: PageBase("SettingsPage"),
 	  mCurrentItem(ITEM_VOLUME),
 	  mVolumeLevel(3),
-	  mBrightness(80) {
+	  mBrightness(100) {
 }
 
 SettingsPage::~SettingsPage() {

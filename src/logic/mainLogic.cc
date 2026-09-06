@@ -2,6 +2,7 @@
 #include "base/base.h"
 #include "base/json_object.h"
 #include <base/wifi.h>
+#include "config/DeviceDefaults.h"
 #include "utils/SpiHelper.h"
 #include "utils/GpioHelper.h"
 #include "managers/KeyManager.h"
@@ -22,6 +23,16 @@
 #include "services/MqttStatusService.h"
 #include "ble/bluetooth_service.h"
 #include "net/NetManager.h"
+#include "utils/Painter.h"
+#include "utils/Surface.h"
+#include <atomic>
+#include <chrono>
+#include <ctime>
+#include <cstring>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 #include <thread>
 #include <os/SystemProperties.h>
 #define WIFIMANAGER NETMANAGER->getWifiManager()
@@ -43,6 +54,11 @@ static int gTestPageIndex = 0;
 static MenuDepth gMenuDepth = MENU_DEPTH_TOP;
 static int gClockCountdownMs = 3000;
 static int gLastClockCountdownValue = -1;
+static std::thread gStartupThread;
+static std::atomic<int> gBootProgress(0);
+static std::atomic<int> gBootState(0);
+static bool gBootScreenVisible = true;
+static uint64_t gBootSuccessAtMs = 0;
 static bool gStreamNoticeNeedsRefresh = false;
 
 static const char* TEST_PAGE_NAMES[] = {
@@ -65,6 +81,197 @@ static int wrapIndex(int value, int count) {
 		value -= count;
 	}
 	return value;
+}
+
+static uint64_t wallClockMs() {
+	struct timeval tv;
+	gettimeofday(&tv, nullptr);
+	return static_cast<uint64_t>(tv.tv_sec) * 1000ULL +
+		static_cast<uint64_t>(tv.tv_usec) / 1000ULL;
+}
+
+static void setBootProgress(int progress) {
+	if (progress < 0) {
+		progress = 0;
+	} else if (progress > 100) {
+		progress = 100;
+	}
+	gBootProgress.store(progress);
+}
+
+static void drawBootScreen() {
+	Surface surface(52, 16, Color(0, 0, 0));
+	const bool success = gBootState.load() == 1;
+	const std::string title = success ? "SUCCESS" : "LOADING";
+	const Color titleColor = success ? Color(0, 255, 0) : Color(0, 220, 255);
+	const int titleWidth = Painter::getInstance().getTextWidth(title, 0);
+	Painter::getInstance().drawText(surface, (52 - titleWidth) / 2, 6,
+		title, titleColor, 0);
+	Painter::getInstance().drawRect(surface, 2, 10, 48, 4,
+		Color(45, 45, 45), false);
+	const int fillWidth = 46 * gBootProgress.load() / 100;
+	if (fillWidth > 0) {
+		Painter::getInstance().drawRect(surface, 3, 11, fillWidth, 2,
+			titleColor, true);
+	}
+	std::vector<uint8_t> data;
+	surface.extractRGB(data);
+	PageBase::sendRawLedData(data);
+}
+
+static time_t utcEpochFromTm(const struct tm& value) {
+	const int year = value.tm_year + 1900;
+	const unsigned month = static_cast<unsigned>(value.tm_mon + 1);
+	const int adjustedYear = year - (month <= 2 ? 1 : 0);
+	const int era = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400;
+	const unsigned yearOfEra = static_cast<unsigned>(adjustedYear - era * 400);
+	const unsigned monthForDay = month > 2 ? month - 3 : month + 9;
+	const unsigned dayOfYear =
+		(153 * monthForDay + 2) / 5 +
+		static_cast<unsigned>(value.tm_mday - 1);
+	const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 -
+		yearOfEra / 100 + dayOfYear;
+	const int daysSinceEpoch = era * 146097 + static_cast<int>(dayOfEra) - 719468;
+	return static_cast<time_t>(daysSinceEpoch) * 86400 +
+		static_cast<time_t>(value.tm_hour) * 3600 +
+		static_cast<time_t>(value.tm_min) * 60 + value.tm_sec;
+}
+
+static bool syncSystemTimeFromHttp() {
+	static const char* hosts[] = {
+		"www.baidu.com", "www.qq.com", "example.com"
+	};
+	for (const char* host : hosts) {
+		addrinfo hints;
+		std::memset(&hints, 0, sizeof(hints));
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_socktype = SOCK_STREAM;
+		addrinfo* addresses = nullptr;
+		if (getaddrinfo(host, "80", &hints, &addresses) != 0) {
+			continue;
+		}
+		bool synchronized = false;
+		for (addrinfo* address = addresses; address != nullptr && !synchronized;
+				address = address->ai_next) {
+			int fd = socket(address->ai_family, address->ai_socktype,
+				address->ai_protocol);
+			if (fd < 0) {
+				continue;
+			}
+			struct timeval timeout = {3, 0};
+			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+			setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+			if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) {
+				std::string request = "HEAD / HTTP/1.1\r\nHost: ";
+				request += host;
+				request += "\r\nConnection: close\r\n\r\n";
+				if (send(fd, request.data(), request.size(), 0) ==
+						static_cast<ssize_t>(request.size())) {
+					char buffer[4096];
+					std::string response;
+					ssize_t received = 0;
+					while (response.size() < sizeof(buffer) * 2 &&
+							(received = recv(fd, buffer, sizeof(buffer), 0)) > 0) {
+						response.append(buffer, static_cast<size_t>(received));
+					}
+					const std::string marker = "\r\nDate: ";
+					size_t dateStart = response.find(marker);
+					if (dateStart != std::string::npos) {
+						dateStart += marker.size();
+						size_t dateEnd = response.find("\r\n", dateStart);
+						if (dateEnd != std::string::npos) {
+							std::string date = response.substr(dateStart,
+								dateEnd - dateStart);
+							struct tm parsed;
+							std::memset(&parsed, 0, sizeof(parsed));
+							if (strptime(date.c_str(),
+									"%a, %d %b %Y %H:%M:%S GMT", &parsed) != nullptr) {
+								time_t epoch = utcEpochFromTm(parsed);
+								if (epoch > 1600000000) {
+									struct timeval current = {
+										epoch, 0
+									};
+									synchronized = settimeofday(&current, nullptr) == 0;
+								}
+							}
+						}
+					}
+				}
+			}
+			close(fd);
+		}
+		freeaddrinfo(addresses);
+		if (synchronized) {
+			LOGI_TRACE("mainLogic: system time synchronized from HTTP %s", host);
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool syncSystemTime() {
+	static const char* servers[] = {
+		"ntp.aliyun.com", "pool.ntp.org", "time.nist.gov"
+	};
+	const uint32_t ntpEpochOffset = 2208988800UL;
+	for (const char* server : servers) {
+		addrinfo hints;
+		std::memset(&hints, 0, sizeof(hints));
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_socktype = SOCK_DGRAM;
+		hints.ai_protocol = IPPROTO_UDP;
+		addrinfo* addresses = nullptr;
+		if (getaddrinfo(server, "123", &hints, &addresses) != 0) {
+			continue;
+		}
+		bool synchronized = false;
+		for (addrinfo* address = addresses; address != nullptr && !synchronized;
+				address = address->ai_next) {
+			int fd = socket(address->ai_family, address->ai_socktype,
+				address->ai_protocol);
+			if (fd < 0) {
+				continue;
+			}
+			struct timeval timeout = {2, 0};
+			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+			unsigned char packet[48] = {0};
+			packet[0] = 0x1b;
+			if (sendto(fd, packet, sizeof(packet), 0, address->ai_addr,
+					address->ai_addrlen) == static_cast<ssize_t>(sizeof(packet))) {
+				ssize_t received = recvfrom(fd, packet, sizeof(packet), 0, nullptr,
+					nullptr);
+				if (received >= 48) {
+					uint32_t seconds = (static_cast<uint32_t>(packet[40]) << 24) |
+						(static_cast<uint32_t>(packet[41]) << 16) |
+						(static_cast<uint32_t>(packet[42]) << 8) |
+						static_cast<uint32_t>(packet[43]);
+					uint32_t fraction = (static_cast<uint32_t>(packet[44]) << 24) |
+						(static_cast<uint32_t>(packet[45]) << 16) |
+						(static_cast<uint32_t>(packet[46]) << 8) |
+						static_cast<uint32_t>(packet[47]);
+					if (seconds > ntpEpochOffset) {
+						struct timeval current = {
+							static_cast<time_t>(seconds - ntpEpochOffset),
+							static_cast<suseconds_t>((static_cast<uint64_t>(fraction) *
+								1000000ULL) >> 32)
+						};
+						synchronized = settimeofday(&current, nullptr) == 0;
+					}
+				}
+			}
+			close(fd);
+		}
+		freeaddrinfo(addresses);
+		if (synchronized) {
+			LOGI_TRACE("mainLogic: system time synchronized from %s", server);
+			return true;
+		}
+	}
+	if (syncSystemTimeFromHttp()) {
+		return true;
+	}
+	LOGW_TRACE("mainLogic: system time synchronization failed");
+	return false;
 }
 
 static void drawTopMenu() {
@@ -215,17 +422,20 @@ void loadConfigAndStart() {
 	if (!base::wifiOnAndWait(10)) {
 		LOGE_TRACE("mainLogic: WiFi failed to start");
 	}
-	std::string ssid, pwd, bleName;
-	bool needConnect = false;
+	setBootProgress(15);
+	std::string ssid = device_defaults::WIFI_SSID;
+	std::string pwd = device_defaults::WIFI_PASSWORD;
+	std::string bleName;
+	bool needConnect = device_defaults::WIFI_CONNECT;
 	MqttStatusService::Config mqttConfig =
 		MqttStatusService::defaultConfig();
 
 	if (base::exists(CONFIG_PATH)) {
 		try {
 			base::JSONObject config = base::JSONObject::parseFromFile(CONFIG_PATH);
-			ssid = config.getString("ssid", "");
-			pwd = config.getString("pwd", "");
-			needConnect = config.getBool("isConnect", false);
+			ssid = config.getString("ssid", ssid);
+			pwd = config.getString("pwd", pwd);
+			needConnect = config.getBool("isConnect", needConnect);
 			bleName = config.getString("ble", "");
 			try {
 				base::JSONObject mqtt = config.getObject("mqtt");
@@ -261,6 +471,21 @@ void loadConfigAndStart() {
 	} else {
 		LOGW_TRACE("mainLogic: config not found: %s", CONFIG_PATH);
 	}
+	if (base::exists(device_defaults::WEB_CONFIG_PATH)) {
+		try {
+			base::JSONObject saved = base::JSONObject::parseFromFile(
+				device_defaults::WEB_CONFIG_PATH);
+			if (saved.has("wifi")) {
+				base::JSONObject wifi = saved.getObject("wifi");
+				ssid = wifi.getString("ssid", ssid);
+				pwd = wifi.getString("password", pwd);
+				needConnect = wifi.getBool("isConnect", needConnect);
+			}
+		} catch (...) {
+			LOGW_TRACE("mainLogic: failed to load web settings");
+		}
+	}
+	setBootProgress(40);
 	if (bleName.empty()) {
 		std::string mac = base::wifiMacAddress();
 		if (mac.size() >= 4) {
@@ -272,6 +497,7 @@ void loadConfigAndStart() {
 	BluetoothParams bleParams;
 	bleParams.name = bleName;
 	BluetoothService::instance().start(bleParams);
+	setBootProgress(55);
 	auto* page = static_cast<WifiTestPage*>(
 		PageManager::getInstance().getPage("WifiTestPage"));
 	if (page) {
@@ -282,8 +508,19 @@ void loadConfigAndStart() {
 		LOGI_TRACE("mainLogic: connecting WiFi for background services");
 		WIFIMANAGER->connect(ssid, pwd);
 	}
+	if (needConnect && !ssid.empty() && WIFIMANAGER != nullptr) {
+		for (int attempt = 0; attempt < 30 && !WIFIMANAGER->isConnected();
+				++attempt) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		}
+	}
+	setBootProgress(70);
+	syncSystemTime();
+	setBootProgress(82);
 	MqttStatusService::getInstance().configure(mqttConfig);
 	MqttStatusService::getInstance().start();
+	setBootProgress(100);
+	gBootState.store(1);
 }
 
 }
@@ -320,9 +557,12 @@ static void onUI_init(){
 	KeyManager::getInstance().start();
 	KeyManager::getInstance().addKeyEventCallback(keyEventCb);
 	StreamNoticeIndicator::getInstance().setNoticeCallback(streamNoticeCb);
-    loadConfigAndStart();
     OfficialCompatServer::getInstance().start();
-    drawTopMenu();
+	setBootProgress(5);
+	drawBootScreen();
+	if (!gStartupThread.joinable()) {
+		gStartupThread = std::thread(loadConfigAndStart);
+	}
 }
 
 /**
@@ -352,6 +592,9 @@ static void onUI_hide() {
  */
 static void onUI_quit() {
 	KeyManager::getInstance().removeKeyEventCallback(keyEventCb);
+	if (gStartupThread.joinable()) {
+		gStartupThread.join();
+	}
 	MqttStatusService::getInstance().stop();
 	OfficialCompatServer::getInstance().stop();
 }
@@ -374,6 +617,24 @@ static void onProtocolDataUpdate(const SProtocolData &data) {
  *             停止运行当前定时器
  */
 static bool onUI_Timer(int id){
+	if (gBootScreenVisible) {
+		if (gBootState.load() == 1) {
+			if (gBootSuccessAtMs == 0) {
+				gBootSuccessAtMs = wallClockMs();
+				drawBootScreen();
+			} else if (wallClockMs() - gBootSuccessAtMs >= 1500) {
+				gBootScreenVisible = false;
+				drawTopMenu();
+			} else {
+				drawBootScreen();
+			}
+		} else {
+			drawBootScreen();
+		}
+		if (gBootScreenVisible) {
+			return true;
+		}
+	}
 	switch (id) {
 		case TIMER_MENU_CLOCK_REFRESH:
 			if (gMenuDepth == MENU_DEPTH_CHILD &&

@@ -4,6 +4,8 @@
 #include <cerrno>
 #include <cctype>
 #include <cstring>
+#include <cstdio>
+#include <fstream>
 #include <map>
 #include <sstream>
 
@@ -29,10 +31,12 @@ extern "C" {
 #include <utils/BrightnessHelper.h>
 #include <zlib.h>
 
+#include "config/DeviceDefaults.h"
 #include "managers/AudioManager.h"
 #include "managers/MenuIndicator.h"
 #include "managers/StreamNoticeIndicator.h"
 #include "pages/PageBase.h"
+#include "services/SettingsWebPage.h"
 
 #define WIFIMANAGER NETMANAGER->getWifiManager()
 
@@ -289,7 +293,34 @@ OfficialCompatServer::OfficialCompatServer()
       mListenFd(-1),
       mAnimationRunning(false),
       mAnimationStopRequested(false),
-      mConfig{80, 50, 80, 100, 3, 60, 7, "UTC+8", "MM/DD", true, 1, false} {
+      mConfig{device_defaults::BRIGHTNESS, device_defaults::LOW_BRIGHTNESS,
+              device_defaults::MID_BRIGHTNESS, device_defaults::HIGH_BRIGHTNESS,
+              device_defaults::VOLUME, device_defaults::CAROUSEL_SPEED,
+              device_defaults::SCROLL_SPEED, device_defaults::TIMEZONE,
+              device_defaults::DATE_FORMAT, device_defaults::SHOW_WEEK,
+              device_defaults::WEEK_START, device_defaults::LOW_BATTERY_AUTO_SLEEP,
+              device_defaults::WIFI_SSID, device_defaults::WIFI_PASSWORD,
+              device_defaults::WIFI_CONNECT} {
+    try {
+        if (base::exists(device_defaults::WEB_CONFIG_PATH)) {
+            const base::JSONObject saved =
+                    base::JSONObject::parseFromFile(device_defaults::WEB_CONFIG_PATH);
+            if (saved.has("brightness")) {
+                mConfig.brightness = clampInt(saved.getInt("brightness"), 0, 100);
+            }
+            if (saved.has("volume")) {
+                mConfig.volume = clampInt(saved.getInt("volume"), 0, 6);
+            }
+            if (saved.has("wifi")) {
+                const base::JSONObject wifi = saved.getObject("wifi");
+                mConfig.wifiSsid = wifi.getString("ssid", mConfig.wifiSsid);
+                mConfig.wifiPassword = wifi.getString("password", mConfig.wifiPassword);
+                mConfig.wifiConnect = wifi.getBool("isConnect", mConfig.wifiConnect);
+            }
+        }
+    } catch (...) {
+        LOGW_TRACE("OfficialCompatServer: failed to load web settings");
+    }
 }
 
 OfficialCompatServer::~OfficialCompatServer() {
@@ -302,6 +333,11 @@ void OfficialCompatServer::start() {
     }
     av_register_all();
     avcodec_register_all();
+    {
+        std::lock_guard<std::mutex> lock(mConfigMutex);
+        BRIGHTNESSHELPER->setBrightness(mConfig.brightness);
+        awtrix::AudioManager::getInstance().setVolume(mConfig.volume);
+    }
     mServerThread = std::thread(&OfficialCompatServer::serverLoop, this);
     LOGI_TRACE("OfficialCompatServer: listening on 0.0.0.0:%d", kPort);
 }
@@ -478,7 +514,12 @@ void OfficialCompatServer::handleClient(int clientFd) {
 
     const size_t queryBegin = target.find('?');
     const std::string path = target.substr(0, queryBegin);
-    if (method == "GET" && path == "/getBase") {
+    if (method == "GET" && path == "/") {
+        sendRedirect(clientFd, "/settings/general");
+    } else if (method == "GET" && path == "/settings/general") {
+        sendResponse(clientFd, 200, "text/html; charset=utf-8",
+                settings_web_page::html());
+    } else if (method == "GET" && path == "/getBase") {
         sendResponse(clientFd, 200, "application/json", baseJson());
     } else if (method == "GET" && path == "/getConfig") {
         sendResponse(clientFd, 200, "application/json", configJson());
@@ -605,7 +646,8 @@ std::string OfficialCompatServer::configJson() const {
         level = "high";
     }
     json << "{\"brightness\":{\"level\":\"" << level
-         << "\",\"low\":" << config.lowBrightness
+         << "\",\"value\":" << config.brightness
+         << ",\"low\":" << config.lowBrightness
          << ",\"mid\":" << config.midBrightness
          << ",\"high\":" << config.highBrightness << "}"
          << ",\"volume\":" << config.volume
@@ -616,7 +658,11 @@ std::string OfficialCompatServer::configJson() const {
          << ",\"showWeek\":" << (config.showWeek ? "true" : "false")
          << ",\"weekStart\":" << config.weekStart
          << ",\"lowBatteryAutoSleep\":"
-         << (config.lowBatteryAutoSleep ? "true" : "false") << "}";
+         << (config.lowBatteryAutoSleep ? "true" : "false")
+         << ",\"wifi\":{\"ssid\":\"" << jsonEscape(config.wifiSsid)
+         << "\",\"password\":\"" << jsonEscape(config.wifiPassword)
+         << "\",\"isConnect\":" << (config.wifiConnect ? "true" : "false")
+         << "}}";
     return json.str();
 }
 
@@ -639,7 +685,9 @@ void OfficialCompatServer::setConfig(const std::string& body) {
             mConfig.highBrightness = clampInt(
                     brightness.getInt("high"), 0, 100);
         }
-        if (brightness.has("level")) {
+        if (brightness.has("value")) {
+            mConfig.brightness = clampInt(brightness.getInt("value"), 0, 100);
+        } else if (brightness.has("level")) {
             const std::string level = brightness.getString("level");
             if (level == "low") {
                 mConfig.brightness = mConfig.lowBrightness;
@@ -676,6 +724,45 @@ void OfficialCompatServer::setConfig(const std::string& body) {
     if (request.has("lowBatteryAutoSleep")) {
         mConfig.lowBatteryAutoSleep = request.getBool("lowBatteryAutoSleep");
     }
+    if (request.has("wifi")) {
+        const base::JSONObject wifi = request.getObject("wifi");
+        if (wifi.has("ssid")) {
+            mConfig.wifiSsid = wifi.getString("ssid");
+        }
+        if (wifi.has("password")) {
+            const std::string password = wifi.getString("password");
+            if (!password.empty()) {
+                mConfig.wifiPassword = password;
+            }
+        }
+        if (wifi.has("isConnect")) {
+            mConfig.wifiConnect = wifi.getBool("isConnect");
+        }
+        if (mConfig.wifiConnect && !mConfig.wifiSsid.empty() &&
+                WIFIMANAGER != nullptr) {
+            WIFIMANAGER->connect(mConfig.wifiSsid, mConfig.wifiPassword);
+        }
+    }
+    if (!persistConfigLocked()) {
+        LOGW_TRACE("OfficialCompatServer: failed to persist web settings");
+    }
+}
+
+bool OfficialCompatServer::persistConfigLocked() const {
+    const std::string temporaryPath =
+            std::string(device_defaults::WEB_CONFIG_PATH) + ".tmp";
+    std::ofstream output(temporaryPath.c_str(), std::ios::out | std::ios::trunc);
+    if (!output.is_open()) {
+        return false;
+    }
+    output << "{\"brightness\":" << mConfig.brightness
+           << ",\"volume\":" << mConfig.volume
+           << ",\"wifi\":{\"ssid\":\"" << jsonEscape(mConfig.wifiSsid)
+           << "\",\"password\":\"" << jsonEscape(mConfig.wifiPassword)
+           << "\",\"isConnect\":" << (mConfig.wifiConnect ? "true" : "false")
+           << "}}";
+    output.close();
+    return std::rename(temporaryPath.c_str(), device_defaults::WEB_CONFIG_PATH) == 0;
 }
 
 bool OfficialCompatServer::readChunkedBody(int clientFd, std::string& body,
@@ -1669,6 +1756,17 @@ void OfficialCompatServer::sendResponse(int fd, int status,
              << "Access-Control-Allow-Headers: Content-Type\r\n"
              << "Connection: close\r\n\r\n"
              << body;
+    const std::string serialized = response.str();
+    sendAll(fd, serialized.data(), serialized.size());
+}
+
+void OfficialCompatServer::sendRedirect(int fd, const char* location) {
+    std::ostringstream response;
+    response << "HTTP/1.1 302 Found\r\n"
+             << "Location: " << location << "\r\n"
+             << "Content-Length: 0\r\n"
+             << "Cache-Control: no-store\r\n"
+             << "Connection: close\r\n\r\n";
     const std::string serialized = response.str();
     sendAll(fd, serialized.data(), serialized.size());
 }
