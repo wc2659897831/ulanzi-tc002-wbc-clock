@@ -874,10 +874,10 @@ void FunctionsPage::drawAuroraAmbience(Surface& surface) {
 }
 
 void FunctionsPage::drawBreathAmbience(Surface& surface) {
-	for (int stream = 0; stream < 18; ++stream) {
-		const int x = (stream * 3 + noiseAt(stream * 97, 3)) % DISPLAY_WIDTH;
-		const int speed = 1 + noiseAt(stream * 53, 3);
-		const int tailLength = 4 + noiseAt(stream * 71, 6);
+	for (int stream = 0; stream < 36; ++stream) {
+		const int x = (stream * 5 + noiseAt(stream * 97, 5)) % DISPLAY_WIDTH;
+		const int speed = 1 + noiseAt(stream * 53, 2);
+		const int tailLength = 5 + noiseAt(stream * 71, 7);
 		const int period = DISPLAY_HEIGHT + tailLength + 5;
 		const int headY = (mAmbienceFrame / speed +
 			noiseAt(stream * 131, period)) % period;
@@ -889,7 +889,7 @@ void FunctionsPage::drawBreathAmbience(Surface& surface) {
 			}
 
 			Color rainColor = tail == 0 ? Color(185, 255, 205) :
-				(tail == 1 ? COLOR_GREEN : scaleColor(COLOR_GREEN, 90 - tail * 9));
+				(tail == 1 ? COLOR_GREEN : scaleColor(COLOR_GREEN, 92 - tail * 7));
 			if (tail > 2 && ((stream + tail + mAmbienceFrame) % 5) == 0) {
 				rainColor = scaleColor(rainColor, 45);
 			}
@@ -898,6 +898,10 @@ void FunctionsPage::drawBreathAmbience(Surface& surface) {
 			if (tail > 0 && ((stream * 7 + tail + mAmbienceFrame / 2) % 6) == 0) {
 				Painter::getInstance().drawPixel(surface, x + 1, y,
 					scaleColor(rainColor, 45));
+			}
+			if (tail > 2 && ((stream * 11 + tail * 3 + mAmbienceFrame) % 13) == 0) {
+				Painter::getInstance().drawPixel(surface, x - 1, y,
+					scaleColor(COLOR_GREEN_DARK, 55));
 			}
 		}
 	}
