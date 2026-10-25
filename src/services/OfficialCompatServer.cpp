@@ -293,6 +293,7 @@ OfficialCompatServer::OfficialCompatServer()
       mListenFd(-1),
       mAnimationRunning(false),
       mAnimationStopRequested(false),
+      mDisplayPriority(0),
       mConfig{device_defaults::BRIGHTNESS, device_defaults::LOW_BRIGHTNESS,
               device_defaults::MID_BRIGHTNESS, device_defaults::HIGH_BRIGHTNESS,
               device_defaults::VOLUME, device_defaults::CAROUSEL_SPEED,
@@ -361,6 +362,29 @@ void OfficialCompatServer::stop() {
 
 void OfficialCompatServer::stopDisplay() {
     stopAnimation();
+    resetDisplayPriority();
+}
+
+int OfficialCompatServer::displayPriorityFor(const std::string& appName) const {
+    return lowerCopy(appName) == "codex" ? 2 : 1;
+}
+
+int OfficialCompatServer::currentDisplayPriority() const {
+    std::lock_guard<std::mutex> lock(mDisplayMutex);
+    return mDisplayPriority;
+}
+
+void OfficialCompatServer::setDisplayPriority(const std::string& appName,
+        int priority) {
+    std::lock_guard<std::mutex> lock(mDisplayMutex);
+    mDisplayPriority = priority;
+    mDisplayApp = appName;
+}
+
+void OfficialCompatServer::resetDisplayPriority() {
+    std::lock_guard<std::mutex> lock(mDisplayMutex);
+    mDisplayPriority = 0;
+    mDisplayApp.clear();
 }
 
 void OfficialCompatServer::serverLoop() {
@@ -549,10 +573,12 @@ void OfficialCompatServer::handleCustom(int clientFd,
 
         const bool canDisplay =
                 StreamNoticeIndicator::getInstance().isStreamDisplayEnabled();
+        const int requestPriority = displayPriorityFor(appName);
 
         if (request.empty()) {
-            if (canDisplay) {
+            if (canDisplay && requestPriority >= currentDisplayPriority()) {
                 clearDisplay();
+                resetDisplayPriority();
             } else {
                 StreamNoticeIndicator::getInstance().notifyStreamData();
             }
@@ -579,8 +605,9 @@ void OfficialCompatServer::handleCustom(int clientFd,
             return;
         }
 
-        if (!canDisplay) {
-            StreamNoticeIndicator::getInstance().notifyStreamData();
+        if (requestPriority < currentDisplayPriority()) {
+            LOGI_TRACE("OfficialCompatServer: app=%s blocked by higher priority display",
+                    appName.c_str());
             sendResponse(clientFd, 200, "application/json",
                     "{\"code\":200,\"message\":\"success\"}");
             return;
@@ -596,14 +623,37 @@ void OfficialCompatServer::handleCustom(int clientFd,
 
         std::vector<DecodedFrame> frames;
         if (!decodeImageDataUri(dataUri, frames) || frames.empty()) {
-            showDecodeError();
+            if (canDisplay) {
+                showDecodeError();
+            } else {
+                StreamNoticeIndicator::getInstance().notifyStreamData();
+            }
             sendResponse(clientFd, 200, "application/json",
                     "{\"code\":200,\"message\":\"accepted unsupported image data\"}");
             return;
         }
 
+        if (!canDisplay) {
+            StreamNoticeIndicator::getInstance().requestStreamDisplay();
+            bool enabled = false;
+            for (int attempt = 0; attempt < 20; ++attempt) {
+                if (StreamNoticeIndicator::getInstance().isStreamDisplayEnabled()) {
+                    enabled = true;
+                    break;
+                }
+                usleep(10 * 1000);
+            }
+            if (!enabled) {
+                StreamNoticeIndicator::getInstance().notifyStreamData();
+                sendResponse(clientFd, 200, "application/json",
+                        "{\"code\":200,\"message\":\"success\"}");
+                return;
+            }
+        }
+
         const int durationSeconds = request.getInt("duration", 0);
         displayFrames(frames, positionX, positionY, durationSeconds);
+        setDisplayPriority(appName, requestPriority);
         sendResponse(clientFd, 200, "application/json",
                 "{\"code\":200,\"message\":\"success\"}");
     } catch (...) {

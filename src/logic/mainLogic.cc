@@ -324,6 +324,24 @@ static void enterChildPage() {
 	}
 }
 
+static void enterStreamDisplayPage() {
+	gMenuDepth = MENU_DEPTH_CHILD;
+	gTopPageIndex = MenuPage::TOP_STREAM;
+	gClockCountdownMs = 0;
+	gLastClockCountdownValue = -1;
+
+	MenuPage* menuPage = static_cast<MenuPage*>(
+		PageManager::getInstance().getPage("MenuPage"));
+	if (menuPage) {
+		menuPage->setTopPage(MenuPage::TOP_STREAM);
+	}
+
+	StreamNoticeIndicator::getInstance().setTopMenuVisible(false);
+	showChildIndicator();
+	PageManager::getInstance().drawCurrentPage();
+	StreamNoticeIndicator::getInstance().setStreamDisplayEnabled(true);
+}
+
 static void exitChildPage() {
 	if (gTopPageIndex == MenuPage::TOP_STREAM) {
 		OfficialCompatServer::getInstance().stopDisplay();
@@ -634,6 +652,9 @@ static bool onUI_Timer(int id){
 		if (gBootScreenVisible) {
 			return true;
 		}
+	}
+	if (StreamNoticeIndicator::getInstance().consumeStreamDisplayRequest()) {
+		enterStreamDisplayPage();
 	}
 	switch (id) {
 		case TIMER_MENU_CLOCK_REFRESH:

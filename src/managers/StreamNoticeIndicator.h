@@ -16,6 +16,8 @@ public:
 	void setStreamDisplayEnabled(bool enabled);
 	bool isStreamDisplayEnabled();
 	bool isNoticeActive();
+	void requestStreamDisplay();
+	bool consumeStreamDisplayRequest();
 	void notifyStreamData();
 	void setNoticeCallback(stream_notice_callback_t callback);
 	void apply(std::vector<uint8_t>& rgbData);
@@ -34,6 +36,7 @@ private:
 	Mutex mMutex;
 	bool mTopMenuVisible;
 	bool mStreamDisplayEnabled;
+	bool mStreamDisplayRequested;
 	uint64_t mNoticeUntilMs;
 	uint32_t mNoticeSequence;
 	stream_notice_callback_t mNoticeCallback;

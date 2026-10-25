@@ -22,6 +22,7 @@ StreamNoticeIndicator& StreamNoticeIndicator::getInstance() {
 StreamNoticeIndicator::StreamNoticeIndicator()
 	: mTopMenuVisible(false),
 	  mStreamDisplayEnabled(false),
+	  mStreamDisplayRequested(false),
 	  mNoticeUntilMs(0),
 	  mNoticeSequence(0),
 	  mNoticeCallback(nullptr) {
@@ -49,6 +50,18 @@ void StreamNoticeIndicator::setStreamDisplayEnabled(bool enabled) {
 bool StreamNoticeIndicator::isStreamDisplayEnabled() {
 	Mutex::Autolock lock(mMutex);
 	return mStreamDisplayEnabled;
+}
+
+void StreamNoticeIndicator::requestStreamDisplay() {
+	Mutex::Autolock lock(mMutex);
+	mStreamDisplayRequested = true;
+}
+
+bool StreamNoticeIndicator::consumeStreamDisplayRequest() {
+	Mutex::Autolock lock(mMutex);
+	const bool requested = mStreamDisplayRequested;
+	mStreamDisplayRequested = false;
+	return requested;
 }
 
 bool StreamNoticeIndicator::isNoticeActive() {

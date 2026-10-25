@@ -18,6 +18,10 @@ public:
     void start();
     void stop();
     void stopDisplay();
+    int displayPriorityFor(const std::string& appName) const;
+    int currentDisplayPriority() const;
+    void setDisplayPriority(const std::string& appName, int priority);
+    void resetDisplayPriority();
 
 private:
     struct DecodedFrame {
@@ -103,6 +107,10 @@ private:
     std::thread mAnimationThread;
     mutable std::mutex mAnimationMutex;
     std::condition_variable mAnimationCondition;
+
+    mutable std::mutex mDisplayMutex;
+    int mDisplayPriority;
+    std::string mDisplayApp;
 
     mutable std::mutex mConfigMutex;
     DeviceConfig mConfig;
